@@ -20,7 +20,7 @@ public class MapInitEvent implements Listener {
         if (world == null) {
             return;
         }
-        String base64 = PDCImageManager.getImageBase64WorldPDC(world, view.getId());
+        byte[] base64 = PDCImageManager.getImageBase64WorldPDC(world, view.getId());
         if (base64 == null) {
             return;
         }

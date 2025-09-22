@@ -123,7 +123,7 @@ public class ImageMapEvent implements Listener {
         ItemStack[][] tileMatrix = new ItemStack[imageMapItem.getXCount()][imageMapItem.getYCount()];
         for (int j = imageMapItem.getYCount() - 1; j >= 0; j--) {
             for (int i = 0; i < imageMapItem.getXCount(); i++) {
-                String tile_b64 = imageMapItem.getTileBase64(i, j);
+                byte[] tile_b64 = imageMapItem.getTileBase64(i, j);
                 ItemStack mapItem = new ItemStack(Material.FILLED_MAP);
                 MapMeta meta = (MapMeta) mapItem.getItemMeta();
                 if (i == 0 && j == imageMapItem.getYCount() - 1) {
@@ -133,7 +133,7 @@ public class ImageMapEvent implements Listener {
                 meta.getPersistentDataContainer().set(originMapLocationX, PersistentDataType.INTEGER, originItemFrame.getLocation().getBlockX());
                 meta.getPersistentDataContainer().set(originMapLocationY, PersistentDataType.INTEGER, originItemFrame.getLocation().getBlockY());
                 meta.getPersistentDataContainer().set(originMapLocationZ, PersistentDataType.INTEGER, originItemFrame.getLocation().getBlockZ());
-                meta.getPersistentDataContainer().set(tileBase64, PersistentDataType.STRING, tile_b64);
+                meta.getPersistentDataContainer().set(tileBase64, PersistentDataType.BYTE_ARRAY, tile_b64);
                 BufferedImage image = decodeBase64ToImage(tile_b64);
                 MapView mapView = Bukkit.createMap(world);
                 meta.setMapView(mapView);
@@ -206,7 +206,7 @@ public class ImageMapEvent implements Listener {
             return null;
         }
         Location origin = new Location(clicked_item_frame.getWorld(), origin_x, origin_y, origin_z);
-        return getItemFrame(origin);
+        return getItemFrame(origin, clicked_item_frame.getFacing());
     }
 
     private static @Nullable ImageMapItem TryGetImageMapItem(ItemStack itemStack) {
@@ -231,7 +231,7 @@ public class ImageMapEvent implements Listener {
         for (int j = 0; j < imageMapItem.getYCount(); j++) {
             for (int i = 0; i < imageMapItem.getXCount(); i++) {
                 ItemStack mapItem = item_frames[i][j].getItem();
-                String tile_b64 = mapItem.getItemMeta().getPersistentDataContainer().get(tileBase64, PersistentDataType.STRING);
+                byte[] tile_b64 = mapItem.getItemMeta().getPersistentDataContainer().get(tileBase64, PersistentDataType.BYTE_ARRAY);
                 imageMapItem.setTileBase64(i, j, tile_b64);
                 imageMapItem.saveTileToWorldPDC(i, j);
                 item_frames[i][j].setItem(new ItemStack(Material.AIR));
@@ -284,7 +284,7 @@ public class ImageMapEvent implements Listener {
                     loc.add(0, 0, -i);
                 }
                 loc.add(0, -j, 0);
-                ItemFrame item_frame = getItemFrame(loc);
+                ItemFrame item_frame = getItemFrame(loc, facing);
                 if (item_frame == null) {
                     throw new Exception(String.format(Language.imageMapEvent.incompleteItemFrameArray, x, y));
                 }
@@ -294,14 +294,17 @@ public class ImageMapEvent implements Listener {
         return item_frames;
     }
 
-    private static ItemFrame getItemFrame(Location loc) {
+    private static ItemFrame getItemFrame(Location loc, BlockFace facing) {
         Collection<Entity> entities = loc.getWorld().getNearbyEntities(loc, 1, 1, 1);
         for (Entity entity : entities) {
             if (entity.getLocation().getBlockX() != loc.getBlockX() || entity.getLocation().getBlockY() != loc.getBlockY() || entity.getLocation().getBlockZ() != loc.getBlockZ()) {
                 continue;
             }
-            if (entity instanceof ItemFrame) {
-                return (ItemFrame) entity;
+            if (entity instanceof ItemFrame itemFrame) {
+                if (itemFrame.getFacing() != facing) {
+                    continue;
+                }
+                return itemFrame;
             }
         }
         return null;

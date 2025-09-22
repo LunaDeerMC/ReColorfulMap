@@ -38,8 +38,8 @@ public class ImageMapItem extends ItemStack {
 
     private final Integer x_count;
     private final Integer y_count;
-    private final String[][] tile_b64_matrix;   // 0,0 is top left
-    private final String thumb_b64;
+    private final byte[][][] tile_b64_matrix;   // 0,0 is top left
+    private final byte[] thumb_b64;
     private final World world;
     private Integer mapview_id;
 
@@ -80,7 +80,7 @@ public class ImageMapItem extends ItemStack {
         BufferedImage centered_image = ImageUtils.center(resized_image, new_width, new_height);
         image_width = centered_image.getWidth();
         image_height = centered_image.getHeight();
-        this.tile_b64_matrix = new String[this.y_count][this.x_count];
+        this.tile_b64_matrix = new byte[this.y_count][this.x_count][];
         for (int y = 0; y < this.y_count; y++) {
             for (int x = 0; x < this.x_count; x++) {
                 int width = Math.min(128, image_width - x * 128);
@@ -97,7 +97,7 @@ public class ImageMapItem extends ItemStack {
 
         MapMeta meta = (MapMeta) this.getItemMeta();
         // Store image tile matrix
-        meta.getPersistentDataContainer().set(THUMB_KEY(), PersistentDataType.STRING, this.thumb_b64);
+        meta.getPersistentDataContainer().set(THUMB_KEY(), PersistentDataType.BYTE_ARRAY, this.thumb_b64);
         meta.getPersistentDataContainer().set(MATRIX_X_KEY(), PersistentDataType.INTEGER, this.tile_b64_matrix[0].length);
         meta.getPersistentDataContainer().set(MATRIX_Y_KEY(), PersistentDataType.INTEGER, this.tile_b64_matrix.length);
         // Set size info
@@ -155,10 +155,10 @@ public class ImageMapItem extends ItemStack {
     public ImageMapItem(ItemStack mapItem) throws Exception {
         super(mapItem);
         MapMeta meta = (MapMeta) mapItem.getItemMeta();
-        if (!meta.getPersistentDataContainer().has(THUMB_KEY(), PersistentDataType.STRING)) {
+        if (!meta.getPersistentDataContainer().has(THUMB_KEY(), PersistentDataType.BYTE_ARRAY)) {
             throw new Exception("IGNORING: Not an ImageMapItem");
         }
-        this.thumb_b64 = meta.getPersistentDataContainer().get(THUMB_KEY(), PersistentDataType.STRING);
+        this.thumb_b64 = meta.getPersistentDataContainer().get(THUMB_KEY(), PersistentDataType.BYTE_ARRAY);
         this.x_count = meta.getPersistentDataContainer().get(MATRIX_X_KEY(), PersistentDataType.INTEGER);
         this.y_count = meta.getPersistentDataContainer().get(MATRIX_Y_KEY(), PersistentDataType.INTEGER);
         if (this.x_count == null || this.y_count == null) {
@@ -169,7 +169,7 @@ public class ImageMapItem extends ItemStack {
         }
         this.world = meta.getMapView().getWorld();
         this.mapview_id = meta.getMapView().getId();
-        this.tile_b64_matrix = new String[this.y_count][this.x_count];
+        this.tile_b64_matrix = new byte[this.y_count][this.x_count][];
         for (int y = 0; y < this.y_count; y++) {
             for (int x = 0; x < this.x_count; x++) {
                 this.tile_b64_matrix[y][x] = getTileFromWorldPDC(x, y);
@@ -194,7 +194,7 @@ public class ImageMapItem extends ItemStack {
         return y_count;
     }
 
-    public String getThumbBase64() {
+    public byte[] getThumbBase64() {
         return thumb_b64;
     }
 
@@ -202,11 +202,11 @@ public class ImageMapItem extends ItemStack {
         return mapview_id;
     }
 
-    public String getTileBase64(int x, int y) {
+    public byte[] getTileBase64(int x, int y) {
         return tile_b64_matrix[y][x];
     }
 
-    public void setTileBase64(int x, int y, String base64) {
+    public void setTileBase64(int x, int y, byte[] base64) {
         tile_b64_matrix[y][x] = base64;
     }
 
@@ -227,15 +227,15 @@ public class ImageMapItem extends ItemStack {
     }
 
     public void saveTileToWorldPDC(int x, int y) {
-        Objects.requireNonNull(world).getPersistentDataContainer().set(IMAGE_TILE_KEY(mapview_id, x, y), PersistentDataType.STRING, tile_b64_matrix[y][x]);
+        Objects.requireNonNull(world).getPersistentDataContainer().set(IMAGE_TILE_KEY(mapview_id, x, y), PersistentDataType.BYTE_ARRAY, tile_b64_matrix[y][x]);
     }
 
     public void removeTileFromWorldPDC(int x, int y) {
         Objects.requireNonNull(world).getPersistentDataContainer().remove(IMAGE_TILE_KEY(mapview_id, x, y));
     }
 
-    public String getTileFromWorldPDC(int x, int y) {
-        return Objects.requireNonNull(world).getPersistentDataContainer().get(IMAGE_TILE_KEY(mapview_id, x, y), PersistentDataType.STRING);
+    public byte[] getTileFromWorldPDC(int x, int y) {
+        return Objects.requireNonNull(world).getPersistentDataContainer().get(IMAGE_TILE_KEY(mapview_id, x, y), PersistentDataType.BYTE_ARRAY);
     }
 
 

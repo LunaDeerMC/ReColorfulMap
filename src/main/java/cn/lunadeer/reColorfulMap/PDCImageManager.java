@@ -18,7 +18,7 @@ public class PDCImageManager {
     public static void addThumbnailToWorldPDC(ImageMapItem imageMap) {
         World world = imageMap.getWorld();
         int mapViewId = imageMap.getMapviewId();
-        String base64 = imageMap.getThumbBase64();
+        byte[] base64 = imageMap.getThumbBase64();
         addImageBase64WorldPDC(world, mapViewId, base64);
     }
 
@@ -42,10 +42,10 @@ public class PDCImageManager {
      * @param mapViewId The ID of the MapView associated with the image.
      * @param base64    The Base64 string of the image to add.
      */
-    public static void addImageBase64WorldPDC(World world, int mapViewId, String base64) {
+    public static void addImageBase64WorldPDC(World world, int mapViewId, byte[] base64) {
         world.getPersistentDataContainer().set(
                 new NamespacedKey("re_colorful_map", "mapview_id_%d".formatted(mapViewId)),
-                PersistentDataType.STRING,
+                PersistentDataType.BYTE_ARRAY,
                 base64
         );
     }
@@ -57,10 +57,10 @@ public class PDCImageManager {
      * @param mapViewId The ID of the MapView to retrieve the image for.
      * @return The Base64 string of the image, or null if not found.
      */
-    public static String getImageBase64WorldPDC(World world, int mapViewId) {
+    public static byte[] getImageBase64WorldPDC(World world, int mapViewId) {
         return world.getPersistentDataContainer().get(
                 new NamespacedKey("re_colorful_map", "mapview_id_%d".formatted(mapViewId)),
-                PersistentDataType.STRING
+                PersistentDataType.BYTE_ARRAY
         );
     }
 

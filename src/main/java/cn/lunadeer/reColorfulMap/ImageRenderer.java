@@ -46,7 +46,7 @@ public class ImageRenderer extends MapRenderer {
         }
     }
 
-    public static MapMeta renderOnMeta(MapMeta meta, String base64) throws Exception {
+    public static MapMeta renderOnMeta(MapMeta meta, byte[] base64) throws Exception {
         BufferedImage image = ImageUtils.decodeBase64ToImage(base64);
         return renderOnMeta(meta, image);
     }

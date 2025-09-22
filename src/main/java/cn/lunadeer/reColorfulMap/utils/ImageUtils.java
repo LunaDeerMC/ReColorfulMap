@@ -68,9 +68,8 @@ public class ImageUtils {
      * @return The decoded BufferedImage.
      * @throws IOException If an error occurs while decoding the image.
      */
-    public static BufferedImage decodeBase64ToImage(String base64) throws IOException {
-        byte[] imageBytes = Base64.getDecoder().decode(base64);
-        ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes);
+    public static BufferedImage decodeBase64ToImage(byte[] base64) throws IOException {
+        ByteArrayInputStream bis = new ByteArrayInputStream(base64);
         return ImageIO.read(bis);
     }
 
@@ -82,11 +81,10 @@ public class ImageUtils {
      * @return The Base64 encoded string representing the image.
      * @throws IOException If an error occurs while encoding the image.
      */
-    public static String encodeImageToBase64(BufferedImage image, String format) throws IOException {
+    public static byte[] encodeImageToBase64(BufferedImage image, String format) throws IOException {
         ByteArrayOutputStream ba_os = new ByteArrayOutputStream();
         ImageIO.write(image, format, ba_os);
-        byte[] imageBytes = ba_os.toByteArray();
-        return Base64.getEncoder().encodeToString(imageBytes);
+        return ba_os.toByteArray();
     }
 
     /**
