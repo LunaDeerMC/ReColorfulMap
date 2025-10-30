@@ -42,7 +42,7 @@ work.
 
 ## Usage
 
-1. First, you need to upload the image you want to convert to the [image bed](https://ssl.lunadeer.cn:14437/),
+1. First, you need to upload the image you want to convert to the [image bed](https://img.lunadeer.cn/),
    so that this plugin can read the image content from the network. After uploading,
    you will get an url of the image, copy this address.
 
