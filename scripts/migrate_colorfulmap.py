@@ -30,6 +30,7 @@ from region_codec import RegionError, rewrite_region
 
 
 PDC_KEY = "re_colorful_map:image_path"
+FILLED_MAP_ID = string("minecraft:filled_map").value
 UUID_TEXT = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 IMAGE_PATH = re.compile(r"maps/(" + UUID_TEXT + r")/(thumb\.png|(?:0|[1-9][0-9]*)_(?:0|[1-9][0-9]*)\.png)\Z")
 TILE_NAME = re.compile(r"(0|[1-9][0-9]*)_(0|[1-9][0-9]*)\.png\Z")
@@ -225,13 +226,33 @@ def stored_files(worlds: dict[str, Path]) -> tuple[list[Path], list[Path]]:
 
 
 class Resolver:
-    def __init__(self, index: dict[tuple[str, int], str], worlds: dict[str, Path], dat_files: list[Path], plan: Plan | None = None):
+    def __init__(self, index: dict[tuple[str, int], str], worlds: dict[str, Path], dat_files: list[Path], plan: Plan | None = None,
+                 dimension_overrides: dict[Path, str] | None = None):
         self.index = index
         self.used: set[tuple[str, int]] = set()
         self.by_id: dict[int, dict[str, str]] = {}
         for (world, identifier), path in index.items():
             self.by_id.setdefault(identifier, {})[world] = path
         uid_names = {}
+        name_uids = {}
+        dimension_names: dict[str, set[str]] = {}
+        unknown_dimensions = set()
+        unknown_identities = set()
+        used_overrides = set()
+        dimension_overrides = dimension_overrides or {}
+
+        def register_identity(identity: uuid.UUID, name: str):
+            if identity in unknown_identities:
+                raise MigrationError(f"Duplicate Bukkit world UUID: {identity}")
+            previous = uid_names.get(identity)
+            if previous is not None and previous != name:
+                raise MigrationError(f"Duplicate Bukkit world UUID: {name} / {previous}")
+            previous_identity = name_uids.get(name)
+            if previous_identity is not None and previous_identity != identity:
+                raise MigrationError(f"Conflicting Bukkit UUIDs for world {name}: {previous_identity} / {identity}")
+            uid_names[identity] = name
+            name_uids[name] = identity
+
         for name, directory in worlds.items():
             uid_file = directory / "uid.dat"
             if uid_file.exists():
@@ -239,9 +260,43 @@ class Resolver:
                 if len(raw) != 16:
                     raise MigrationError(f"Invalid Bukkit world UUID file: {uid_file}")
                 identity = uuid.UUID(bytes=raw)
-                if identity in uid_names:
-                    raise MigrationError(f"Duplicate Bukkit world UUID: {name} / {uid_names[identity]}")
-                uid_names[identity] = name
+                register_identity(identity, name)
+            # Paper 26.2 stores each dimension's UUID in namespaced SavedData,
+            # replacing uid.dat. Bukkit names below match PaperWorldLoader's
+            # defaultWorldName(levelId, stemKey), not the dimension folder name.
+            dimensions = directory / "dimensions"
+            if dimensions.is_dir():
+                for metadata in sorted(dimensions.glob("**/data/paper/metadata.dat")):
+                    parts = metadata.relative_to(dimensions).parts
+                    if len(parts) < 5:
+                        raise MigrationError(f"Invalid Paper dimension metadata location: {metadata}")
+                    namespace, dimension_path = parts[0], "/".join(parts[1:-3])
+                    key = namespace + ":" + dimension_path
+                    conventional = {"minecraft:overworld": name, "minecraft:the_nether": name + "_nether", "minecraft:the_end": name + "_the_end"}
+                    dimension_directory = metadata.parent.parent.parent
+                    dimension_name = dimension_overrides.get(dimension_directory, conventional.get(key))
+                    if dimension_directory in dimension_overrides:
+                        used_overrides.add(dimension_directory)
+                    document, _ = decode_dat(plan.read(metadata) if plan is not None else read_regular(metadata))
+                    data = require_compound(document.root, "data")
+                    identity_tag = data.get("uuid") if data is not None else None
+                    if identity_tag is None or identity_tag.kind != 11 or len(identity_tag.value) != 20 or identity_tag.value[:4] != b"\x00\x00\x00\x04":
+                        raise MigrationError(f"Expected UUID int-array[4] in Paper metadata: {metadata}")
+                    identity = uuid.UUID(bytes=identity_tag.value[4:])
+                    if dimension_name is None:
+                        # API-created worlds accept arbitrary WorldCreator names;
+                        # Paper saves only their UUID, not that Bukkit name.
+                        # The same key also has a different default datapack name.
+                        # An explicit name is needed to disambiguate custom worlds.
+                        if identity in uid_names or identity in unknown_identities:
+                            raise MigrationError(f"Duplicate Bukkit world UUID in metadata: {metadata}")
+                        unknown_identities.add(identity)
+                        unknown_dimensions.add(key)
+                    else:
+                        register_identity(identity, dimension_name)
+                        dimension_names.setdefault(key, set()).add(dimension_name)
+        if used_overrides != dimension_overrides.keys():
+            raise MigrationError(f"--dimension does not identify discovered Paper metadata: {sorted(str(path) for path in dimension_overrides.keys() - used_overrides)}")
         self.native: dict[int, set[str]] = {}
         self.native_unknown: set[int] = set()
         for path in dat_files:
@@ -270,11 +325,16 @@ class Resolver:
                 dimension = data.get("dimension")
                 if dimension is not None and dimension.kind == 8:
                     dimension_name = string_value(dimension)
-                    candidates = [world for world in worlds if dimension_name == "minecraft:" + world.lower()]
-                    conventional = {"minecraft:overworld": "", "minecraft:the_nether": "_nether", "minecraft:the_end": "_the_end"}
-                    if dimension_name in conventional:
-                        suffix = conventional[dimension_name]
-                        candidates = [world for world in worlds if (world.endswith(suffix) if suffix else not world.endswith(("_nether", "_the_end")))]
+                    # An unnamed custom world sharing this dimension key makes
+                    # a dimension-only match ambiguous even if one other world
+                    # has an explicit name. Never select that named world alone.
+                    candidates = [] if dimension_name in unknown_dimensions else list(dimension_names.get(dimension_name, ()))
+                    if not candidates and dimension_name not in unknown_dimensions:
+                        candidates = [world for world in worlds if dimension_name == "minecraft:" + world.lower()]
+                        conventional = {"minecraft:overworld": "", "minecraft:the_nether": "_nether", "minecraft:the_end": "_the_end"}
+                        if dimension_name in conventional:
+                            suffix = conventional[dimension_name]
+                            candidates = [world for world in worlds if (world.endswith(suffix) if suffix else not world.endswith(("_nether", "_the_end")))]
                     if len(candidates) == 1:
                         name = candidates[0]
             if name is None:
@@ -287,7 +347,7 @@ class Resolver:
         if options is None:
             return None
         if identifier in self.native_unknown:
-            raise MigrationError(f"Map ID {identifier} has native map data but its source world cannot be identified; include the world's uid.dat and --world NAME=PATH")
+            raise MigrationError(f"Map ID {identifier} has native map data but its source world cannot be identified; include its uid.dat/Paper metadata, --world NAME=PATH, or --dimension BUKKIT_NAME=world/dimensions/namespace/path for a custom 26.2 dimension")
         native = self.native.get(identifier, set())
         if native:
             paths = {options[name] for name in native if name in options}
@@ -319,7 +379,10 @@ def migrate_document(document: Document, resolver: Resolver, counts: Counts) -> 
         nonlocal changed
         if tag.kind == 10:
             identifier_tag = tag.get("id")
-            if identifier_tag is not None and identifier_tag.kind == 8 and string_value(identifier_tag) == "minecraft:filled_map":
+            # Unknown custom data can also have an `id` key containing Java
+            # Modified UTF-8. Match this ASCII identifier without decoding any
+            # unrelated string, preserving emoji/NUL and arbitrary plugin data.
+            if identifier_tag is not None and identifier_tag.kind == 8 and identifier_tag.value == FILLED_MAP_ID:
                 modern = tag.get("components") is not None or tag.get("count") is not None
                 container = require_compound(tag, "components" if modern else "tag")
                 map_tag = container.get("minecraft:map_id" if modern else "map") if container is not None else None
@@ -433,6 +496,7 @@ class Plan:
     changes: dict[Path, Change] = field(default_factory=dict)
     observations: dict[Path, str | None] = field(default_factory=dict)
     save_files: list[str] = field(default_factory=list)
+    dimension_overrides: dict[str, str] = field(default_factory=dict)
 
     def observe(self, path: Path, data: bytes | None):
         actual = digest(data) if data is not None else None
@@ -603,6 +667,7 @@ def commit(plan: Plan, root: Path, source: Path, target: Path, worlds: dict[str,
     manifest = {"format": 1, "state": "preparing", "server_root": str(root), "source": str(source), "target": str(target),
                 "worlds": {key: str(value) for key, value in worlds.items()}, "counts": vars(counts), "unused_index_entries": unused, "changes": [],
                 "observed": {str(path): value for path, value in plan.observations.items()}, "save_files": plan.save_files,
+                "dimension_overrides": plan.dimension_overrides,
                 "source_indexes": {str(path): value for path, value in plan.observations.items() if path.parent == source / "maps" and path.name in {"maps.yml", "maps.yaml"}}}
     # Back up every before-image before any destination is changed.
     for i, change in enumerate(plan.changes.values()):
@@ -671,10 +736,12 @@ def all_save_files(worlds: dict[str, Path]) -> tuple[list[Path], list[Path], lis
     return dat_files, regions, external
 
 
-def verify_completed(directory: Path, worlds: dict[str, Path]):
+def verify_completed(directory: Path, worlds: dict[str, Path], dimensions: dict[Path, str]):
     manifest = json.loads(read_regular(directory / "manifest.json"))
     if manifest["worlds"] != {key: str(value) for key, value in worlds.items()}:
         raise MigrationError(f"The world selection differs from the completed migration; no files changed. Previous transaction: {directory}")
+    if manifest.get("dimension_overrides", {}) != {str(path): name for path, name in dimensions.items()}:
+        raise MigrationError(f"The dimension names differ from the completed migration; no files changed. Previous transaction: {directory}")
     inputs = sorted(str(path) for group in all_save_files(worlds) for path in group)
     if inputs != manifest.get("save_files"):
         raise MigrationError(f"The save-file set changed after migration; do not rerun against a server that has been used. Previous transaction: {directory}")
@@ -697,21 +764,33 @@ def run(args) -> dict:
             restore_transaction(directory, manifest)
         return {"status": "rolled_back", "transaction": str(directory)}
     source, target = rooted(root, args.source), rooted(root, args.target)
+    dimensions = {}
+    for override in args.dimension:
+        if "=" not in override:
+            raise MigrationError("--dimension must be BUKKIT_NAME=PATH")
+        name, value = override.split("=", 1)
+        if not name or not value:
+            raise MigrationError("--dimension must be BUKKIT_NAME=PATH")
+        path = rooted(root, value)
+        if path in dimensions or name in dimensions.values():
+            raise MigrationError(f"Duplicate --dimension name or path: {override}")
+        dimensions[path] = name
     previous = completed_transaction(root, source, target)
     if previous is not None:
         worlds = discover_worlds(root, args.world)
         with world_locks(worlds):
-            verify_completed(previous, worlds)
+            verify_completed(previous, worlds, dimensions)
         return {"status": "already_migrated", "transaction": str(previous),
                 "message": "This source/target migration is already complete; no files were changed."}
     index_file, index, index_bytes = load_index(source)
     worlds = discover_worlds(root, args.world)
     with world_locks(worlds), tempfile.TemporaryDirectory(prefix="recolorfulmap-migration-") as temporary:
         plan = Plan(Path(temporary))
+        plan.dimension_overrides = {str(path): name for path, name in dimensions.items()}
         plan.observe(index_file, index_bytes)
         dat_files, regions, external_files = all_save_files(worlds)
         plan.save_files = sorted(str(path) for group in (dat_files, regions, external_files) for path in group)
-        resolver = Resolver(index, worlds, dat_files, plan)
+        resolver = Resolver(index, worlds, dat_files, plan, dimensions)
         counts = Counts()
         prepare_images(source, target, index, plan)
         for path in dat_files:
@@ -755,6 +834,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source", default="plugins/ColorfulMap", help="Legacy plugin directory, relative to server root")
     result.add_argument("--target", default="plugins/ReColorfulMap", help="New plugin directory, relative to server root")
     result.add_argument("--world", action="append", default=[], metavar="NAME=PATH", help="Explicit Bukkit world name and location (repeatable)")
+    result.add_argument("--dimension", action="append", default=[], metavar="BUKKIT_NAME=PATH", help="Explicit Bukkit name for a custom Paper 26.2 dimension directory (repeatable)")
     result.add_argument("--apply", action="store_true", help="Commit after all preflight checks pass; default only reports a dry run")
     result.add_argument("--rollback", metavar="TRANSACTION", help="Restore a previous migration after checking backups and current-file hashes")
     return result

@@ -14,6 +14,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -71,8 +72,13 @@ public class ToMap implements TabExecutor {
                 Scheduler.runTask(player, () -> {
                     try {
                         ImageMapItem item = new ImageMapItem(player.getWorld(), artwork, thumbnail);
-                        player.getInventory().addItem(item).values().forEach(leftover ->
-                                player.getWorld().dropItemNaturally(player.getLocation(), leftover));
+                        for (ItemStack leftover : player.getInventory().addItem(item).values()) {
+                            if (!player.getWorld().dropItemNaturally(player.getLocation(), leftover).isValid()) {
+                                // A spawn listener may have transferred the item elsewhere, so keep its files.
+                                throw new IllegalStateException("Could not deliver the generated map: item drop was cancelled. "
+                                        + "Image files were kept for artwork " + artwork.id());
+                            }
+                        }
                         Notification.info(player, Language.toMapCommand.generatedMap, artwork.columns(), artwork.rows());
                     } catch (Exception e) {
                         reportFailure(player, e);

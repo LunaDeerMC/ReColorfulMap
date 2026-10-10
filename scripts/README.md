@@ -27,6 +27,18 @@ bash scripts/migrate-colorfulmap.sh --server-root /srv/minecraft \
 原地转换会备份并移除旧 `maps.yml`。支持 `--world 世界名=/实际路径` 指定额外世界；
 文件夹名与 Bukkit 世界名不一致时也应使用此参数。可重复传入多个 `--world`。
 
+Paper 26.2 的世界 UUID 会从各维度的 `data/paper/metadata.dat` 读取；旧版 `uid.dat`
+同样支持。默认主世界、下界和末地名称自动匹配。插件创建的自定义维度可能使用任意 Bukkit
+名称，而 Paper 没有将该名称保存在维度元数据中；遇到这种数据，按旧 `maps.yml` 中的名称指定：
+
+```bash
+bash scripts/migrate-colorfulmap.sh --server-root /srv/minecraft \
+  --dimension 'My Custom World=world/dimensions/example/custom_world' --apply
+```
+
+`--dimension` 只补充名字和维度目录的对应，不会将维度当作独立世界创建或单独锁定。
+使用标准维度键但自定义 Bukkit 名称的世界，也应通过该参数指定实际名称。
+
 备份、哈希和事务状态保存在服务器根目录的 `.recolorfulmap-migrations/<事务ID>`。
 遇到普通提交错误自动回滚；进程或主机异常退出后，保持停服，使用输出中的事务目录恢复：
 
@@ -60,3 +72,5 @@ bash scripts/migrate-colorfulmap.sh --server-root /srv/minecraft \
 python3 -m pip install -r scripts/requirements.txt
 python3 -m unittest discover -s scripts/tests -v
 ```
+
+实际 Paper 存档的独立字节检查和 CLI 进程中断测试见 [e2e/README.md](e2e/README.md)。

@@ -1,7 +1,6 @@
 package cn.lunadeer.reColorfulMap.utils;
 
 import net.kyori.adventure.bossbar.BossBar;
-import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.title.Title;
 import org.bukkit.command.CommandSender;
@@ -10,56 +9,52 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 public class SendMessageAbstract {
 
-    private BukkitAudiences adventure = null;
-    private JavaPlugin plugin;
+    private final JavaPlugin plugin;
 
     public SendMessageAbstract(JavaPlugin plugin) {
         this.plugin = plugin;
-        this.adventure = BukkitAudiences.create(plugin);
     }
 
     public void sendMessage(Player player, Component msg) {
 
-        this.adventure.player(player).sendMessage(msg);
+        player.sendMessage(msg);
 
     }
 
     public void sendMessage(CommandSender sender, Component msg) {
 
-        this.adventure.sender(sender).sendMessage(msg);
+        sender.sendMessage(msg);
 
     }
 
     public void broadcast(Component msg) {
 
-        adventure.all().sendMessage(msg);
+        for (Player player : plugin.getServer().getOnlinePlayers()) {
+            player.sendMessage(msg);
+        }
+        plugin.getServer().getConsoleSender().sendMessage(msg);
 
     }
 
     public void sendActionBar(Player player, Component msg) {
 
-        this.adventure.player(player).sendActionBar(msg);
+        player.sendActionBar(msg);
 
     }
 
     public void sendTitle(Player player, Component title, Component subtitle) {
         Title titleObj = Title.title(title, subtitle);
 
-        this.adventure.player(player).showTitle(titleObj);
+        player.showTitle(titleObj);
 
     }
 
     public void sendBossBar(Player player, Component msg) {
         BossBar bossBar = BossBar.bossBar(msg, 1.0f, BossBar.Color.BLUE, BossBar.Overlay.PROGRESS);
 
-        this.adventure.player(player).showBossBar(bossBar);
+        player.showBossBar(bossBar);
 
-        Scheduler.runTaskLater(() -> {
-            if (this.adventure == null) {
-                player.hideBossBar(bossBar);
-            } else {
-                this.adventure.player(player).hideBossBar(bossBar);
-            }
-        }, 60);
+        // Follow the player's owning region if they move before the bar expires.
+        player.getScheduler().runDelayed(plugin, task -> player.hideBossBar(bossBar), null, 60);
     }
 }

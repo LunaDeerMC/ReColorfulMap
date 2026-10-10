@@ -1,0 +1,10 @@
+{
+  "name": "recolorfulmap-e2e-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "minecraft-data": "3.117.0",
+    "minecraft-protocol": "1.68.0"
+  }
+}

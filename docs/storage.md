@@ -87,6 +87,17 @@ bash scripts/migrate-colorfulmap.sh --server-root /srv/minecraft \
 
 应提供全部世界，包含暂时未启用的世界。脚本使用世界 `session.lock` 拒绝迁移正在运行的存档。
 它同时读取 Bukkit 世界 UUID 和原生地图数据，处理跨世界移动的地图；遇到无法确定归属的重号地图会中止，不猜测图片。
+旧存档从 `uid.dat` 读取世界 UUID；Paper 26.2 从
+`world/dimensions/<命名空间>/<维度>/data/paper/metadata.dat` 读取。
+主世界、地狱和末地自动识别。通过其他插件创建的自定义维度，若存档无法确定其 Bukkit 世界名，需明确指定：
+
+```bash
+bash scripts/migrate-colorfulmap.sh --server-root . \
+  --dimension ResourceWorld=world/dimensions/custom/resource --apply
+```
+
+`--dimension` 左侧必须是旧 `maps.yml` 使用的 Bukkit 世界名，右侧是对应维度目录；可以重复传入。
+使用标准维度键、但由插件赋予非默认 Bukkit 世界名的维度，也可通过此参数明确指定。
 
 ## 备份、回滚与范围
 
@@ -134,7 +145,11 @@ MCA 支持 gzip、zlib、无压缩及外置 `.mcc`；遇到 LZ4 或旧 Paper ove
 
 自动化测试覆盖 PDC 路径读写、PNG 存储、缓存失效、销毁原因筛选、任意分块整幅取回和重新放置，
 以及迁移中的玩家/容器/展示框物品、26.2 路径、NBT 保真、坏文件拒绝、备份和回滚。
-26.2 API 与存档格式已核对；自动化检查不能代替 Minecraft 客户端和 Folia 实服验收。
+另已在隔离 Paper 26.2 和 Folia 26.2 中使用真实协议客户端验证，并运行原始 ColorfulMap 2.3 JAR
+生成旧数据完成升级链路。独立存档检查器确认迁移只修改目标字段；真实进程强杀后的回滚也已验证。
+具体环境、覆盖范围、修复和制品哈希见 [端到端验证记录](e2e-validation.md)。
 
 建议在服务器副本中迁移后检查背包、箱子和墙面地图，执行整幅取回与重放，再重启检查显示。
 使用专门的测试地图验证丢弃后烧毁/自然消失会删除目录，拾取和取回不会删除。
+运行时图片删除与 Minecraft 世界保存不是同一个事务；突然崩溃后的旧保存点可能仍含有已删除图片的物品，
+因此应将世界、玩家与图片目录作为一组备份和恢复。

@@ -1,0 +1,9 @@
+name: RCMFoliaE2E
+version: '1'
+main: test.recolorfulmap.folia.RCMFoliaE2E
+api-version: '26.2'
+folia-supported: true
+depend: [ReColorfulMap]
+commands:
+  rcmfolia:
+    description: Disposable Folia E2E observer

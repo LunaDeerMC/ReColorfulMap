@@ -1,0 +1,12 @@
+name: RCME2E
+version: 1
+main: test.recolorfulmap.RCME2E
+api-version: '1.20'
+softdepend: [ReColorfulMap, ColorfulMap]
+commands:
+  rcme2e:
+    description: Disposable local-server E2E fixture and observation commands
+    permission: rcme2e.run
+permissions:
+  rcme2e.run:
+    default: op

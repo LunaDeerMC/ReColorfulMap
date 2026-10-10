@@ -399,8 +399,7 @@ public class ImageMapEvent implements Listener {
                     if (frame.isFixed()) {
                         throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
                     }
-                    EntityDamageByEntityEvent probe = new EntityDamageByEntityEvent(
-                            original.getDamager(), frame, original.getCause(), original.getDamage());
+                    EntityDamageByEntityEvent probe = createDamageProbe(EntityDamageByEntityEvent.class, original, frame);
                     Bukkit.getPluginManager().callEvent(probe);
                     if (probe.isCancelled()) {
                         throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
@@ -409,6 +408,27 @@ public class ImageMapEvent implements Listener {
             }
         } finally {
             protectionProbe.remove();
+        }
+    }
+
+    /** Retains modern damage attribution for protection plugins while supporting the 1.20.1 API. */
+    static <T extends EntityDamageByEntityEvent> T createDamageProbe(
+            Class<T> eventType, EntityDamageByEntityEvent original, Entity target) {
+        try {
+            Method damageSource;
+            try {
+                damageSource = eventType.getMethod("getDamageSource");
+            } catch (NoSuchMethodException legacyApi) {
+                return eventType.getConstructor(Entity.class, Entity.class,
+                                EntityDamageByEntityEvent.DamageCause.class, double.class)
+                        .newInstance(original.getDamager(), target, original.getCause(), original.getDamage());
+            }
+            return eventType.getConstructor(Entity.class, Entity.class, EntityDamageByEntityEvent.DamageCause.class,
+                            damageSource.getReturnType(), double.class)
+                    .newInstance(original.getDamager(), target, original.getCause(),
+                            damageSource.invoke(original), original.getDamage());
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("Cannot create an item frame damage protection event on this server", failure);
         }
     }
 
