@@ -19,9 +19,9 @@
 
 ReColorfulMap is a plugin that converts images into image maps, which can be hung on item frames to add decoration.
 
-This is a remake of the original ColorfulMap plugin. The original plugin leaves a lot of images cache in plugins folder,
-and need to reload them every time the server starts. Which also increases the server startup time and management
-difficulty.
+This is a remake of the original ColorfulMap plugin. Images are stored as PNG files in
+`plugins/ReColorfulMap/maps`, using the same layout as ColorfulMap 2.3. The plugin loads the map ID index at startup
+and reads images when needed. Image data is never stored in world or item PDC.
 
 Both ColorfulMap and ReColorfulMap's idea are from [ImageFrame](https://github.com/LOOHP/ImageFrame)
 and [ImageMaps](https://github.com/SydMontague/ImageMaps).
@@ -82,9 +82,25 @@ work.
 |-------------|---------------------------------|---------------------|---------|
 | Generate    | `/tomap <image-url> [scalling]` | recolorfulmap.tomap | true    |
 | Reload      | `/reloadColorfulMap`            | recolorfulmap.admin | op      |
-| Clean Cache | `/cleanColorfulMap`             | recolorfulmap.admin | op      |
+| Clean Temporary Files | `/cleanColorfulMap`    | recolorfulmap.admin | op      |
 
-NOTICE: Don't run `/cleanColorfulMap` frequently, it will delete all the images generated but not placed.
+`/cleanColorfulMap` only removes temporary files left by failed plugin writes. It preserves artwork PNGs and map ID
+records, including maps in inventories, chests, and unloaded chunks.
+
+### Upgrading from ColorfulMap 2.3
+
+1. Stop the server and back up the worlds and `plugins/ColorfulMap/maps`.
+2. Remove the ColorfulMap 2.3 plugin JAR and install ReColorfulMap.
+3. Copy the **entire** `plugins/ColorfulMap/maps` directory to `plugins/ReColorfulMap/maps`, including `maps.yml`
+   and every UUID directory. Use the actual plugin data directory; its default is `plugins/ReColorfulMap`.
+4. Keep the existing world saves and their map ID data, then start the server. No conversion command is needed.
+
+Existing placed maps and unplaced artwork items are supported. Existing complete wall arrays can also be retrieved
+as a whole artwork. Placement and retrieval preserve the image files and previous map ID records so copied items
+remain usable. Back up the `maps` directory together with world and player data.
+
+The repository's previous PDC image storage is discontinued and has no migration support.
+See [storage format and upgrade notes (Chinese)](docs/storage.md) for details.
 
 ### Configuration Reference
 

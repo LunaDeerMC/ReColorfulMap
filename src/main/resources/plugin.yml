@@ -14,7 +14,7 @@ commands:
     usage: /reloadColorfulMap
     permission: recolorfulmap.admin
   cleanColorfulMap:
-    description: Clean invalid maps data
+    description: Clean temporary map storage files
     usage: /cleanColorfulMap
     permission: recolorfulmap.admin
 permissions:

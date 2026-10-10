@@ -1,32 +1,47 @@
 package cn.lunadeer.reColorfulMap.events;
 
-import cn.lunadeer.reColorfulMap.*;
+import cn.lunadeer.reColorfulMap.Configuration;
+import cn.lunadeer.reColorfulMap.ImageMapItem;
+import cn.lunadeer.reColorfulMap.ImageRenderer;
+import cn.lunadeer.reColorfulMap.Language;
+import cn.lunadeer.reColorfulMap.storage.MapStorage;
+import cn.lunadeer.reColorfulMap.ReColorfulMap;
 import cn.lunadeer.reColorfulMap.utils.Notification;
+import cn.lunadeer.reColorfulMap.utils.Scheduler;
 import cn.lunadeer.reColorfulMap.utils.VaultConnect.VaultConnect;
 import cn.lunadeer.reColorfulMap.utils.XLogger;
 import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationPart;
-import org.bukkit.*;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.Rotation;
+import org.bukkit.World;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.hanging.HangingBreakByEntityEvent;
 import org.bukkit.event.hanging.HangingBreakEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
-import org.bukkit.persistence.PersistentDataType;
 
-import javax.annotation.Nullable;
 import java.awt.image.BufferedImage;
-import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
-import static cn.lunadeer.reColorfulMap.utils.ImageUtils.decodeBase64ToImage;
-
+/** Item frames carry ordinary map items; their identity comes from maps/maps.yml. */
 public class ImageMapEvent implements Listener {
 
     public static class ImageMapEventText extends ConfigurationPart {
@@ -35,278 +50,560 @@ public class ImageMapEvent implements Listener {
         public String hookEconomyFailed = "Failed to hook economy plugin.";
         public String balanceNotEnough = "Not enough balance to place image map.";
         public String priceInfo = "Matrix size: %d x %d, unit price: %f, total price: %f, your balance: %f";
+        public String occupiedItemFrame = "All item frames must be empty.";
+        public String inconsistentItemFrameArray = "The item frame array is incomplete or contains a different image.";
+        public String protectedItemFrame = "You cannot modify one or more of these item frames.";
+        public String mapChanged = "The held map or item frames changed. Please try again.";
+        public String unownedRegion = "The image crosses a server region that cannot be modified from here.";
+        public String unloadedChunk = "Some item frames are in unloaded chunks. Load the entire image area and try again.";
+        public String operationFailed = "Failed to update image map: %s";
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // Protection plugins must see each affected frame. Do not process our own probes recursively.
+    private final ThreadLocal<Boolean> protectionProbe = ThreadLocal.withInitial(() -> false);
+    private static final boolean FOLIA = isFolia();
+    private final Set<UUID> pendingPlacements = ConcurrentHashMap.newKeySet();
+
+    private record Placement(UUID playerId, Player player, ItemFrame originFrame, Location origin,
+                             BlockFace facing, World world, String worldName, ItemStack held,
+                             MapStorage store, MapStorage.Artwork artwork) { }
+
+    private record PreparedTiles(ItemStack[][] items,
+                                 Map<MapStorage.MapKey, MapStorage.ImageReference> references) { }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void putImageMapsOnItemFrame(PlayerInteractEntityEvent event) {
-        if (event.isCancelled()) {
+        if (event.isCancelled() || protectionProbe.get() || event.getHand() != EquipmentSlot.HAND
+                || !(event.getRightClicked() instanceof ItemFrame clicked)) {
             return;
         }
-        // if not item frame return
-        Entity entity = event.getRightClicked();
-        if (!(entity instanceof ItemFrame item_frame)) {    // where to place
+        Player player = event.getPlayer();
+        ItemStack held = player.getInventory().getItemInMainHand().clone();
+        if (!ImageMapItem.isImageMap(held)) {
             return;
         }
-        Player player = event.getPlayer();  // who placed
-        ImageMapItem imageMapItem;  // what to place
+        // Claim recognized maps even when their files are damaged, so vanilla cannot consume them.
+        event.setCancelled(true);
+        UUID playerId = player.getUniqueId();
+        if (!pendingPlacements.add(playerId)) {
+            return;
+        }
         try {
-            imageMapItem = new ImageMapItem(event.getPlayer().getInventory().getItemInMainHand());
-            XLogger.debug("ImageMapItem size: %d x %d", imageMapItem.getXCount(), imageMapItem.getYCount());
-        } catch (Exception e) {
-            XLogger.debug("Not a image map: %s", e.getMessage());
-            return;
+            ImageMapItem imageMap = new ImageMapItem(held);
+            ItemFrame[][] frames = getItemFrameMatrix(clicked, imageMap.getXCount(), imageMap.getYCount());
+            requireEmpty(frames);
+            checkPlacementPermission(player, frames);
+            placementCost(player, imageMap.getArtwork());
+            World world = clicked.getWorld();
+            Placement placement = new Placement(playerId, player, clicked, clicked.getLocation().clone(),
+                    clicked.getFacing(), world, world.getName(), held, storage(), imageMap.getArtwork());
+            Scheduler.runTaskAsync(() -> preparePlacement(placement));
+        } catch (Exception failure) {
+            pendingPlacements.remove(playerId);
+            reportFailure(player, failure);
         }
-        event.setCancelled(true); // cancel event we need to take over the logic
+    }
 
+    /** Only immutable artwork identity and file storage are accessed on this worker. */
+    private void preparePlacement(Placement placement) {
         try {
-            // get item frame matrix
-            ItemFrame[][] item_frames = getItemFrameMatrix(item_frame, imageMapItem.getXCount(), imageMapItem.getYCount());
+            BufferedImage[][] images = readTiles(placement.store(), placement.artwork());
+            onPlayerThread(placement, () -> createPlacement(placement, images));
+        } catch (Exception failure) {
+            failOnPlayerThread(placement, failure);
+        }
+    }
 
-            // handle economy
-            if (Configuration.economy.enable) {
-                double cost = Configuration.economy.costPerMap * imageMapItem.getXCount() * imageMapItem.getYCount();
-                if (!VaultConnect.instance.economyAvailable()) {
-                    Notification.error(player, Language.imageMapEvent.hookEconomyFailed);
-                    return;
+    /** Bukkit map and item creation belongs to the player's server/region thread. */
+    private void createPlacement(Placement placement, BufferedImage[][] images) {
+        try {
+            placementFrames(placement);
+            PreparedTiles tiles = createTiles(placement, images);
+            Scheduler.runTaskAsync(() -> {
+                try {
+                    placement.store().register(tiles.references());
+                    onPlayerThread(placement, () -> finishPlacement(placement, tiles.items()));
+                } catch (Exception failure) {
+                    failOnPlayerThread(placement, failure);
                 }
-                if (VaultConnect.instance.getBalance(player) < cost) {
-                    Notification.error(player, Language.imageMapEvent.balanceNotEnough);
-                    Notification.error(player, Language.imageMapEvent.priceInfo,
-                            imageMapItem.getXCount(),
-                            imageMapItem.getYCount(),
-                            Configuration.economy.costPerMap,
-                            cost,
-                            VaultConnect.instance.getBalance(player));
-                    return;
-                }
+            });
+        } catch (Exception failure) {
+            finishFailure(placement, failure);
+        }
+    }
+
+    private void finishPlacement(Placement placement, ItemStack[][] tiles) {
+        try {
+            ItemFrame[][] frames = placementFrames(placement);
+            checkPlacementPermission(placement.player(), frames);
+            double cost = placementCost(placement.player(), placement.artwork());
+            // Protection callbacks may change the world or inventory. Recheck before any payment.
+            placementFrames(placement);
+            commitPlacement(placement, frames, tiles, cost);
+        } catch (Exception failure) {
+            reportFailure(placement.player(), failure);
+        } finally {
+            pendingPlacements.remove(placement.playerId());
+        }
+    }
+
+    private static ItemFrame[][] placementFrames(Placement placement) throws Exception {
+        // Check the captured location before accessing the entity: the player may have changed regions.
+        requireOwned(placement.origin());
+        ItemFrame origin = placement.originFrame();
+        if (!origin.isValid() || !placement.origin().equals(origin.getLocation())
+                || origin.getFacing() != placement.facing()
+                || placement.player().getWorld() != placement.world()
+                || !placement.held().equals(placement.player().getInventory().getItemInMainHand())) {
+            throw new IllegalStateException(Language.imageMapEvent.mapChanged);
+        }
+        ItemFrame[][] frames = getItemFrameMatrix(origin, placement.artwork().columns(), placement.artwork().rows());
+        requireEmpty(frames);
+        return frames;
+    }
+
+    private static void commitPlacement(Placement placement, ItemFrame[][] frames, ItemStack[][] tiles, double cost) throws Exception {
+        Player player = placement.player();
+        ItemStack held = placement.held();
+        FrameSnapshot[][] before = null;
+        boolean charged = false;
+        boolean handChanged = false;
+        try {
+            if (cost > 0) {
                 VaultConnect.instance.withdrawPlayer(player, cost);
+                charged = true;
             }
+            placementFrames(placement);
+            requireEmpty(frames);
+            before = snapshot(frames);
+            for (int x = 0; x < frames.length; x++) {
+                for (int y = 0; y < frames[x].length; y++) {
+                    frames[x][y].setItem(tiles[x][y], false);
+                    frames[x][y].setRotation(Rotation.NONE);
+                }
+            }
+            ItemStack remaining = held.clone();
+            remaining.setAmount(held.getAmount() - 1);
+            handChanged = true;
+            player.getInventory().setItemInMainHand(remaining.getAmount() == 0
+                    ? new ItemStack(Material.AIR) : remaining);
+        } catch (Exception failure) {
+            if (before != null) {
+                restore(frames, before);
+            }
+            if (handChanged) {
+                try {
+                    player.getInventory().setItemInMainHand(held);
+                } catch (Exception restoreFailure) {
+                    failure.addSuppressed(restoreFailure);
+                    XLogger.err("Failed to restore held image map for %s: %s", player.getName(), restoreFailure.getMessage());
+                }
+            }
+            if (charged) {
+                try {
+                    VaultConnect.instance.depositPlayer(player, cost);
+                } catch (Exception refundFailure) {
+                    failure.addSuppressed(refundFailure);
+                    XLogger.err("Failed to refund image map placement for %s: %s", player.getName(), refundFailure.getMessage());
+                }
+            }
+            throw failure;
+        }
+    }
 
-            // place them
+    private void onPlayerThread(Placement placement, Runnable task) {
+        try {
+            Scheduler.runTask(placement.player(), task, () -> pendingPlacements.remove(placement.playerId()));
+        } catch (Exception failure) {
+            pendingPlacements.remove(placement.playerId());
+            // Scheduling can fail during shutdown; logging is safe even on the worker thread.
+            XLogger.warn("Cannot finish image map placement: %s", failure.getMessage());
+        }
+    }
 
-            // check if every item frame can be interacted
-            for (int j = 0; j < imageMapItem.getYCount(); j++) {
-                for (int i = 0; i < imageMapItem.getXCount(); i++) {
-                    XLogger.debug("Checking item frame [%d, %d] %s", i, j, item_frames[i][j].getLocation().toString());
-                    player.getInventory().setItemInMainHand(new ItemStack(Material.FILLED_MAP));
-                    PlayerInteractEntityEvent event_put_map = new PlayerInteractEntityEvent(player, item_frames[i][j]);
-                    Bukkit.getPluginManager().callEvent(event_put_map);
-                    if (event_put_map.isCancelled()) {
-                        player.getInventory().setItemInMainHand(imageMapItem);
-                        XLogger.debug("Item frame [%d, %d] is not interactable (cancelled)", i, j);
-                        return;
+    private void failOnPlayerThread(Placement placement, Exception failure) {
+        onPlayerThread(placement, () -> finishFailure(placement, failure));
+    }
+
+    private void finishFailure(Placement placement, Exception failure) {
+        try {
+            reportFailure(placement.player(), failure);
+        } finally {
+            pendingPlacements.remove(placement.playerId());
+        }
+    }
+
+    private void checkPlacementPermission(Player player, ItemFrame[][] frames) {
+        protectionProbe.set(true);
+        try {
+            for (ItemFrame[] column : frames) {
+                for (ItemFrame frame : column) {
+                    PlayerInteractEntityEvent probe = new PlayerInteractEntityEvent(player, frame, EquipmentSlot.HAND);
+                    Bukkit.getPluginManager().callEvent(probe);
+                    if (probe.isCancelled()) {
+                        throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
                     }
                 }
             }
-            player.getInventory().setItemInMainHand(imageMapItem);
-            // generate each map item and place them
-            ItemStack[][] tileMatrix = getTileMatrix(item_frame, imageMapItem);
-            for (int j = 0; j < imageMapItem.getYCount(); j++) {
-                for (int i = 0; i < imageMapItem.getXCount(); i++) {
-                    item_frames[i][j].setItem(new ItemStack(Material.AIR));
-                    // place
-                    item_frames[i][j].setItem(tileMatrix[i][j]);
-                }
-            }
-        } catch (Exception e) {
-            Notification.error(player, e.getMessage());
-            return;
+        } finally {
+            protectionProbe.remove();
         }
-
-        // postprocess remove item from player's hand and remove thumbnail from world
-        player.getInventory().setItemInMainHand(new ItemStack(Material.AIR));
-        PDCImageManager.removeThumbnailFromWorldPDC(imageMapItem);
     }
 
-    private static ItemStack[][] getTileMatrix(ItemFrame originItemFrame, ImageMapItem imageMapItem) throws Exception {
-        World world = originItemFrame.getWorld();
-        ItemStack[][] tileMatrix = new ItemStack[imageMapItem.getXCount()][imageMapItem.getYCount()];
-        for (int j = imageMapItem.getYCount() - 1; j >= 0; j--) {
-            for (int i = 0; i < imageMapItem.getXCount(); i++) {
-                byte[] tile_b64 = imageMapItem.getTileBase64(i, j);
-                ItemStack mapItem = new ItemStack(Material.FILLED_MAP);
-                MapMeta meta = (MapMeta) mapItem.getItemMeta();
-                if (i == 0 && j == imageMapItem.getYCount() - 1) {
-                    // copy origin item frame's PDC to the map item
-                    meta = (MapMeta) imageMapItem.getItemMeta();
-                }
-                meta.getPersistentDataContainer().set(originMapLocationX, PersistentDataType.INTEGER, originItemFrame.getLocation().getBlockX());
-                meta.getPersistentDataContainer().set(originMapLocationY, PersistentDataType.INTEGER, originItemFrame.getLocation().getBlockY());
-                meta.getPersistentDataContainer().set(originMapLocationZ, PersistentDataType.INTEGER, originItemFrame.getLocation().getBlockZ());
-                meta.getPersistentDataContainer().set(tileBase64, PersistentDataType.BYTE_ARRAY, tile_b64);
-                BufferedImage image = decodeBase64ToImage(tile_b64);
-                MapView mapView = Bukkit.createMap(world);
-                meta.setMapView(mapView);
-                ImageRenderer.renderOnMeta(meta, image);
-                mapItem.setItemMeta(meta);
-                tileMatrix[i][j] = mapItem;
-                // add the tile to world PDC for rendering, and remove the tile cache
-                PDCImageManager.addImageBase64WorldPDC(world, mapView.getId(), tile_b64);
-                imageMapItem.removeTileFromWorldPDC(i, j);
-            }
+    private static double placementCost(Player player, MapStorage.Artwork artwork) {
+        if (!Configuration.economy.enable) {
+            return 0;
         }
-        return tileMatrix;
+        if (VaultConnect.instance == null || !VaultConnect.instance.economyAvailable()) {
+            throw new IllegalStateException(Language.imageMapEvent.hookEconomyFailed);
+        }
+        double cost = Configuration.economy.costPerMap * artwork.columns() * artwork.rows();
+        if (!Double.isFinite(cost) || cost < 0) {
+            throw new IllegalStateException("Invalid image map placement price.");
+        }
+        double balance = VaultConnect.instance.getBalance(player);
+        if (balance < cost) {
+            Notification.error(player, Language.imageMapEvent.priceInfo,
+                    artwork.columns(), artwork.rows(), Configuration.economy.costPerMap, cost, balance);
+            throw new IllegalStateException(Language.imageMapEvent.balanceNotEnough);
+        }
+        return cost;
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST)
+    /** File decoding runs asynchronously; no world, player or map APIs are used here. */
+    private static BufferedImage[][] readTiles(MapStorage storage, MapStorage.Artwork artwork) throws Exception {
+        BufferedImage[][] images = new BufferedImage[artwork.columns()][artwork.rows()];
+        for (int x = 0; x < artwork.columns(); x++) {
+            for (int y = 0; y < artwork.rows(); y++) {
+                images[x][y] = storage.read(MapStorage.ImageReference.tile(artwork.id(), x, y));
+            }
+        }
+        return images;
+    }
+
+    /** Builds ordinary map items on the server thread, without writing the index. */
+    private static PreparedTiles createTiles(Placement placement, BufferedImage[][] images) throws Exception {
+        MapStorage.Artwork artwork = placement.artwork();
+        ItemStack[][] tiles = new ItemStack[artwork.columns()][artwork.rows()];
+        Map<MapStorage.MapKey, MapStorage.ImageReference> references = new LinkedHashMap<>();
+        for (int x = 0; x < artwork.columns(); x++) {
+            for (int y = 0; y < artwork.rows(); y++) {
+                ItemStack tile = new ItemStack(Material.FILLED_MAP);
+                MapMeta meta = (MapMeta) tile.getItemMeta();
+                MapView view = Bukkit.createMap(placement.world());
+                meta.setMapView(view);
+                MapStorage.ImageReference reference = MapStorage.ImageReference.tile(artwork.id(), x, y);
+                ImageRenderer.renderOnMeta(meta, images[x][y], placement.store(), reference);
+                tile.setItemMeta(meta);
+                tiles[x][y] = tile;
+                references.put(new MapStorage.MapKey(placement.worldName(), view.getId()), reference);
+            }
+        }
+        return new PreparedTiles(tiles, references);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void itemFrameBroken(HangingBreakEvent event) {
-        if (event.isCancelled()) {
+        if (event.isCancelled() || protectionProbe.get() || !(event.getEntity() instanceof ItemFrame clicked)) {
             return;
         }
-        ItemFrame originItemFrame = TryGetOriginItemFrame(event.getEntity());
-        if (originItemFrame == null) {
+        Optional<MapStorage.ImageReference> reference = tileReference(clicked.getItem());
+        if (reference.isEmpty()) {
             return;
         }
-        ImageMapItem imageMapItem = TryGetImageMapItem(originItemFrame.getItem());
-        if (imageMapItem == null) {
-            return;
+        Player player = event instanceof HangingBreakByEntityEvent byEntity && byEntity.getRemover() instanceof Player p ? p : null;
+        try {
+            ItemFrame[][] frames = completePickupFrames(clicked, reference.get());
+            if (frames == null) {
+                return; // A loose legacy tile or an incomplete wall can still be removed normally.
+            }
+            // Once a whole artwork is recognized, failures must leave every frame intact.
+            event.setCancelled(true);
+            checkBreakPermission(event, frames);
+            recover(clicked, reference.get(), frames);
+            // Vanilla can now remove and drop the emptied clicked frame.
+            event.setCancelled(false);
+        } catch (Exception failure) {
+            event.setCancelled(true);
+            reportFailure(player, failure);
         }
-        // drop imageMapItem
-        HandleBroken(originItemFrame, imageMapItem);
-        event.getEntity().getWorld().dropItemNaturally(event.getEntity().getLocation(), imageMapItem);
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void breakImageMapsFromItemFrame(EntityDamageByEntityEvent event) {
-        if (event.isCancelled()) {
+        if (event.isCancelled() || protectionProbe.get() || !(event.getEntity() instanceof ItemFrame clicked)) {
             return;
         }
-        ItemFrame originItemFrame = TryGetOriginItemFrame(event.getEntity());
-        if (originItemFrame == null) {
+        Optional<MapStorage.ImageReference> reference = tileReference(clicked.getItem());
+        if (reference.isEmpty()) {
             return;
         }
-        ImageMapItem imageMapItem = TryGetImageMapItem(originItemFrame.getItem());
-        if (imageMapItem == null) {
-            return;
-        }
-        // drop imageMapItem
-        event.setCancelled(true);
-        HandleBroken(originItemFrame, imageMapItem);
-        event.getDamager().getWorld().dropItemNaturally(event.getEntity().getLocation(), imageMapItem);
-    }
-
-
-    private static @Nullable ItemFrame TryGetOriginItemFrame(Entity entity) {
-        if (!(entity instanceof ItemFrame clicked_item_frame)) {
-            return null;
-        }
-        if (clicked_item_frame.getItem().getType() != Material.FILLED_MAP) {
-            return null;
-        }
-        ItemStack mapItemStack = clicked_item_frame.getItem();
-        if (!mapItemStack.getItemMeta().getPersistentDataContainer().has(originMapLocationX) ||
-                !mapItemStack.getItemMeta().getPersistentDataContainer().has(originMapLocationY) ||
-                !mapItemStack.getItemMeta().getPersistentDataContainer().has(originMapLocationZ)) {
-            return null;
-        }
-        Integer origin_x = mapItemStack.getItemMeta().getPersistentDataContainer().get(originMapLocationX, PersistentDataType.INTEGER);
-        Integer origin_y = mapItemStack.getItemMeta().getPersistentDataContainer().get(originMapLocationY, PersistentDataType.INTEGER);
-        Integer origin_z = mapItemStack.getItemMeta().getPersistentDataContainer().get(originMapLocationZ, PersistentDataType.INTEGER);
-        if (origin_x == null || origin_y == null || origin_z == null) {
-            return null;
-        }
-        Location origin = new Location(clicked_item_frame.getWorld(), origin_x, origin_y, origin_z);
-        return getItemFrame(origin, clicked_item_frame.getFacing());
-    }
-
-    private static @Nullable ImageMapItem TryGetImageMapItem(ItemStack itemStack) {
         try {
-            ImageMapItem imageMapItem = new ImageMapItem(itemStack.clone());
-            imageMapItem.setUpThumbnail(); // regenerate thumbnail
-            return imageMapItem;
-        } catch (Exception e) {
-            XLogger.debug("Not a image map: %s", e.getMessage());
+            ItemFrame[][] frames = completePickupFrames(clicked, reference.get());
+            if (frames == null) {
+                return;
+            }
+            event.setCancelled(true);
+            checkDamagePermission(event, frames);
+            recover(clicked, reference.get(), frames);
+        } catch (Exception failure) {
+            event.setCancelled(true);
+            reportFailure(event.getDamager() instanceof Player player ? player : null, failure);
+        }
+    }
+
+    private void checkBreakPermission(HangingBreakEvent original, ItemFrame[][] frames) {
+        protectionProbe.set(true);
+        try {
+            for (ItemFrame[] column : frames) {
+                for (ItemFrame frame : column) {
+                    if (frame.isFixed()) {
+                        throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
+                    }
+                    HangingBreakEvent probe = original instanceof HangingBreakByEntityEvent byEntity
+                            ? new HangingBreakByEntityEvent(frame, byEntity.getRemover(), original.getCause())
+                            : new HangingBreakEvent(frame, original.getCause());
+                    Bukkit.getPluginManager().callEvent(probe);
+                    if (probe.isCancelled()) {
+                        throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
+                    }
+                }
+            }
+        } finally {
+            protectionProbe.remove();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void checkDamagePermission(EntityDamageByEntityEvent original, ItemFrame[][] frames) {
+        protectionProbe.set(true);
+        try {
+            for (ItemFrame[] column : frames) {
+                for (ItemFrame frame : column) {
+                    if (frame.isFixed()) {
+                        throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
+                    }
+                    EntityDamageByEntityEvent probe = new EntityDamageByEntityEvent(
+                            original.getDamager(), frame, original.getCause(), original.getDamage());
+                    Bukkit.getPluginManager().callEvent(probe);
+                    if (probe.isCancelled()) {
+                        throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
+                    }
+                }
+            }
+        } finally {
+            protectionProbe.remove();
+        }
+    }
+
+    private static ItemFrame[][] completePickupFrames(ItemFrame clicked, MapStorage.ImageReference reference) {
+        try {
+            return pickupFrames(clicked, reference);
+        } catch (UnavailableFrameAreaException unavailable) {
+            // An unloaded or foreign region can contain a complete painting. Do not split it blindly.
+            throw unavailable;
+        } catch (Exception incomplete) {
+            // 2.3 also allowed individual tiles. Missing metadata or neighboring tiles must not trap them.
             return null;
         }
     }
 
-    private static void HandleBroken(ItemFrame originItemFrame, ImageMapItem imageMapItem) {
-        ItemFrame[][] item_frames;
+    private static ItemFrame[][] pickupFrames(ItemFrame clicked, MapStorage.ImageReference reference) throws Exception {
+        MapStorage.Artwork artwork = storage().artwork(reference.artwork());
+        Location origin = originLocation(clicked.getLocation(), clicked.getFacing(), reference.x(), reference.y(), artwork.rows());
+        ItemFrame originFrame = getItemFrame(origin, clicked.getFacing());
+        if (originFrame == null) {
+            throw new IllegalStateException(Language.imageMapEvent.inconsistentItemFrameArray);
+        }
+        ItemFrame[][] frames = getItemFrameMatrix(originFrame, artwork.columns(), artwork.rows());
+        requireMatching(frames, artwork);
+        return frames;
+    }
+
+    private static void recover(ItemFrame clicked, MapStorage.ImageReference reference, ItemFrame[][] frames) throws Exception {
+        MapStorage.Artwork artwork = storage().artwork(reference.artwork());
+        requireMatching(frames, artwork);
+        // Saving the new thumbnail reference can fail; do it before touching a single frame.
+        ImageMapItem recovered = new ImageMapItem(clicked.getWorld(), artwork);
+        FrameSnapshot[][] before = snapshot(frames);
+        Item dropped = null;
         try {
-            item_frames = getItemFrameMatrix(originItemFrame, imageMapItem.getXCount(), imageMapItem.getYCount());
-        } catch (Exception e) {
-            // todo ignore for now, but should not happen or handle with a better way
-            return;
-        }
-        for (int j = 0; j < imageMapItem.getYCount(); j++) {
-            for (int i = 0; i < imageMapItem.getXCount(); i++) {
-                ItemStack mapItem = item_frames[i][j].getItem();
-                byte[] tile_b64 = mapItem.getItemMeta().getPersistentDataContainer().get(tileBase64, PersistentDataType.BYTE_ARRAY);
-                imageMapItem.setTileBase64(i, j, tile_b64);
-                imageMapItem.saveTileToWorldPDC(i, j);
-                item_frames[i][j].setItem(new ItemStack(Material.AIR));
-                MapMeta meta = (MapMeta) mapItem.getItemMeta();
-                MapView mapView = meta.getMapView();
-                if (mapView == null) {
-                    continue;
+            for (ItemFrame[] column : frames) {
+                for (ItemFrame frame : column) {
+                    frame.setItem(new ItemStack(Material.AIR), false);
                 }
-                int mapviewId = mapView.getId();
-                PDCImageManager.removeImageBase64WorldPDC(item_frames[i][j].getWorld(), mapviewId);
+            }
+            dropped = clicked.getWorld().dropItemNaturally(clicked.getLocation(), recovered);
+            if (!dropped.isValid()) {
+                throw new IllegalStateException("The recovered map could not be dropped.");
+            }
+        } catch (Exception failure) {
+            if (dropped != null) {
+                try {
+                    dropped.remove();
+                } catch (Exception removeFailure) {
+                    failure.addSuppressed(removeFailure);
+                }
+            }
+            restore(frames, before);
+            throw failure;
+        }
+    }
+
+    private static Optional<MapStorage.ImageReference> tileReference(ItemStack item) {
+        if (item.getType() != Material.FILLED_MAP || !(item.getItemMeta() instanceof MapMeta meta)) {
+            return Optional.empty();
+        }
+        MapView view = meta.getMapView();
+        if (view == null || view.getWorld() == null) {
+            return Optional.empty();
+        }
+        // Map IDs follow the MapView's world, even if the item was carried into another world.
+        return storage().find(view.getWorld().getName(), view.getId()).filter(reference -> !reference.thumbnail());
+    }
+
+    public static boolean isExpectedTile(MapStorage.ImageReference reference, MapStorage.Artwork artwork, int x, int y) {
+        return reference != null && !reference.thumbnail() && reference.artwork().equals(artwork.id())
+                && reference.x() == x && reference.y() == y;
+    }
+
+    private static void requireMatching(ItemFrame[][] frames, MapStorage.Artwork artwork) {
+        for (int x = 0; x < frames.length; x++) {
+            for (int y = 0; y < frames[x].length; y++) {
+                ItemFrame frame = frames[x][y];
+                requireOwned(frame.getLocation());
+                if (!frame.isValid() || !isExpectedTile(tileReference(frame.getItem()).orElse(null), artwork, x, y)) {
+                    throw new IllegalStateException(Language.imageMapEvent.inconsistentItemFrameArray);
+                }
             }
         }
     }
 
-    private static final NamespacedKey originMapLocationX = new NamespacedKey("re_colorful_map", "origin_map_location_x");
-    private static final NamespacedKey originMapLocationY = new NamespacedKey("re_colorful_map", "origin_map_location_y");
-    private static final NamespacedKey originMapLocationZ = new NamespacedKey("re_colorful_map", "origin_map_location_z");
-    private static final NamespacedKey tileBase64 = new NamespacedKey("re_colorful_map", "tile_base64");
-
-    /**
-     * Retrieves a matrix of ItemFrame objects starting from the specified bottom-left ItemFrame.
-     *
-     * @param left_bottom The bottom-left ItemFrame from which to start the matrix.
-     * @param x           The number of ItemFrames along the x-axis.
-     * @param y           The number of ItemFrames along the y-axis.
-     * @return A 2D array of ItemFrame objects. top-left is [0][0]
-     * @throws Exception If the direction of the ItemFrame is UP or DOWN, or if the matrix is incomplete.
-     */
-    public static ItemFrame[][] getItemFrameMatrix(ItemFrame left_bottom, Integer x, Integer y) throws Exception {
-        ItemFrame[][] item_frames = new ItemFrame[x][y];
-        Location corner = left_bottom.getLocation();
-        BlockFace facing = left_bottom.getFacing();
-
-        if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
-            throw new Exception(Language.imageMapEvent.notSupportedDirection);
-        }
-
-        Location top_left = corner.add(0, y - 1, 0);
-
-        for (int j = 0; j < y; j++) {
-            for (int i = 0; i < x; i++) {
-                Location loc = top_left.clone();
-                if (facing == BlockFace.NORTH) {
-                    loc.add(-i, 0, 0);
-                } else if (facing == BlockFace.SOUTH) {
-                    loc.add(i, 0, 0);
-                } else if (facing == BlockFace.WEST) {
-                    loc.add(0, 0, i);
-                } else if (facing == BlockFace.EAST) {
-                    loc.add(0, 0, -i);
+    private static void requireEmpty(ItemFrame[][] frames) {
+        for (ItemFrame[] column : frames) {
+            for (ItemFrame frame : column) {
+                requireOwned(frame.getLocation());
+                if (!frame.isValid() || frame.isFixed() || !frame.getItem().getType().isAir()) {
+                    throw new IllegalStateException(Language.imageMapEvent.occupiedItemFrame);
                 }
-                loc.add(0, -j, 0);
-                ItemFrame item_frame = getItemFrame(loc, facing);
-                if (item_frame == null) {
-                    throw new Exception(String.format(Language.imageMapEvent.incompleteItemFrameArray, x, y));
-                }
-                item_frames[i][j] = item_frame;
             }
         }
-        return item_frames;
     }
 
-    private static ItemFrame getItemFrame(Location loc, BlockFace facing) {
-        Collection<Entity> entities = loc.getWorld().getNearbyEntities(loc, 1, 1, 1);
-        for (Entity entity : entities) {
-            if (entity.getLocation().getBlockX() != loc.getBlockX() || entity.getLocation().getBlockY() != loc.getBlockY() || entity.getLocation().getBlockZ() != loc.getBlockZ()) {
-                continue;
+    private record FrameSnapshot(ItemStack item, Rotation rotation) { }
+
+    private static FrameSnapshot[][] snapshot(ItemFrame[][] frames) {
+        FrameSnapshot[][] result = new FrameSnapshot[frames.length][];
+        for (int x = 0; x < frames.length; x++) {
+            result[x] = new FrameSnapshot[frames[x].length];
+            for (int y = 0; y < frames[x].length; y++) {
+                result[x][y] = new FrameSnapshot(frames[x][y].getItem().clone(), frames[x][y].getRotation());
             }
-            if (entity instanceof ItemFrame itemFrame) {
-                if (itemFrame.getFacing() != facing) {
-                    continue;
+        }
+        return result;
+    }
+
+    private static void restore(ItemFrame[][] frames, FrameSnapshot[][] before) {
+        for (int x = 0; x < frames.length; x++) {
+            for (int y = 0; y < frames[x].length; y++) {
+                try {
+                    frames[x][y].setItem(before[x][y].item(), false);
+                    frames[x][y].setRotation(before[x][y].rotation());
+                } catch (Exception failure) {
+                    XLogger.err("Failed to restore item frame %s: %s", frames[x][y].getUniqueId(), failure.getMessage());
                 }
-                return itemFrame;
+            }
+        }
+    }
+
+    /** Coordinates use the image's top-left origin; the wall is anchored at its bottom-left frame. */
+    public static Location tileLocation(Location origin, BlockFace facing, int x, int y, int rows) {
+        validateCoordinates(facing, x, y, rows);
+        return origin.clone().add(facing.getModZ() * x, rows - 1 - y, -facing.getModX() * x);
+    }
+
+    /** Inverse of tileLocation, also works for ColorfulMap 2.3 frames with no item metadata. */
+    public static Location originLocation(Location tile, BlockFace facing, int x, int y, int rows) {
+        validateCoordinates(facing, x, y, rows);
+        return tile.clone().add(-facing.getModZ() * x, y - rows + 1, facing.getModX() * x);
+    }
+
+    private static void validateCoordinates(BlockFace facing, int x, int y, int rows) {
+        if (facing != BlockFace.NORTH && facing != BlockFace.SOUTH && facing != BlockFace.WEST && facing != BlockFace.EAST) {
+            throw new IllegalArgumentException(Language.imageMapEvent.notSupportedDirection);
+        }
+        if (rows <= 0 || x < 0 || y < 0 || y >= rows) {
+            throw new IllegalArgumentException("Invalid image tile coordinates.");
+        }
+    }
+
+    public static ItemFrame[][] getItemFrameMatrix(ItemFrame leftBottom, Integer columns, Integer rows) throws Exception {
+        if (columns == null || rows == null || columns <= 0 || rows <= 0) {
+            throw new IllegalArgumentException("Invalid image dimensions.");
+        }
+        ItemFrame[][] frames = new ItemFrame[columns][rows];
+        for (int x = 0; x < columns; x++) {
+            for (int y = 0; y < rows; y++) {
+                Location location = tileLocation(leftBottom.getLocation(), leftBottom.getFacing(), x, y, rows);
+                ItemFrame frame = getItemFrame(location, leftBottom.getFacing());
+                if (frame == null) {
+                    throw new IllegalStateException(Language.imageMapEvent.incompleteItemFrameArray.formatted(columns, rows));
+                }
+                frames[x][y] = frame;
+            }
+        }
+        return frames;
+    }
+
+    private static ItemFrame getItemFrame(Location location, BlockFace facing) {
+        requireOwned(location);
+        if (location.getWorld() == null) {
+            return null;
+        }
+        if (!location.getWorld().isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)) {
+            throw new UnavailableFrameAreaException(Language.imageMapEvent.unloadedChunk);
+        }
+        for (Entity entity : location.getWorld().getNearbyEntities(location, 0.25, 0.25, 0.25)) {
+            if (entity instanceof ItemFrame frame && frame.getFacing() == facing
+                    && entity.getLocation().getBlockX() == location.getBlockX()
+                    && entity.getLocation().getBlockY() == location.getBlockY()
+                    && entity.getLocation().getBlockZ() == location.getBlockZ()) {
+                return frame;
             }
         }
         return null;
+    }
+
+    private static void requireOwned(Location location) {
+        if (FOLIA && !Bukkit.isOwnedByCurrentRegion(location)) {
+            throw new UnavailableFrameAreaException(Language.imageMapEvent.unownedRegion);
+        }
+    }
+
+    private static final class UnavailableFrameAreaException extends IllegalStateException {
+        private UnavailableFrameAreaException(String message) {
+            super(message);
+        }
+    }
+
+    private static boolean isFolia() {
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        }
+    }
+
+    private static MapStorage storage() {
+        return ReColorfulMap.getInstance().getMapStorage();
+    }
+
+    private static void reportFailure(Player player, Exception failure) {
+        String message = Language.imageMapEvent.operationFailed.formatted(failure.getMessage());
+        if (player != null) {
+            Notification.error(player, message);
+        }
+        XLogger.warn(message);
     }
 }

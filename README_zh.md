@@ -19,8 +19,8 @@
 
 ReColorfulMap 可以将图片自动转换为地图画阵列，用以方便地悬挂公告、装饰画、地图等。
 
-该插件是 ColorfulMap 的重制版，旧版本会在插件文件夹下产生大量的缓存图片。每次服务器启动都需要重新加载这些图片，并且难以区分哪些图片是有用的
-哪些图片是废弃的，十分难以管理。
+该插件是 ColorfulMap 的重制版，使用与 ColorfulMap 2.3 相同的文件布局，将 PNG 图片保存在
+`plugins/ReColorfulMap/maps` 中。启动时读取地图 ID 索引，图片按需加载，图片数据不会写入世界或物品 PDC。
 
 不论是 ColorfulMap 还是 ReColorfulMap 它们的实现方式均源自于 [ImageFrame](https://github.com/LOOHP/ImageFrame)
 和 [ImageMaps](https://github.com/SydMontague/ImageMaps). 你可以认为这是简化版的 ImageFrame 或者 ImageMaps 的高版本重置。
@@ -70,9 +70,25 @@ ReColorfulMap 可以将图片自动转换为地图画阵列，用以方便地悬
 |----------|---------------------------------|---------------------|---------|
 | 生成地图画    | `/tomap <image-url> [scalling]` | recolorfulmap.tomap | true    |
 | 重载配置     | `/reloadColorfulMap`            | recolorfulmap.admin | op      |
-| 清理缓存     | `/cleanColorfulMap`             | recolorfulmap.admin | op      |
+| 清理临时文件  | `/cleanColorfulMap`             | recolorfulmap.admin | op      |
 
-请注意：不要频繁运行 `/cleanColorfulMap`，它会删除所有已生成但未放置的图片。
+`/cleanColorfulMap` 仅清理插件写入失败遗留的临时文件，保留地图画 PNG 和地图 ID 索引，
+包括背包、箱子和未加载区块中的地图画所引用的数据。
+
+### 从 ColorfulMap 2.3 升级
+
+1. 停服，备份世界存档和 `plugins/ColorfulMap/maps`。
+2. 移除 ColorfulMap 2.3 插件 JAR，安装 ReColorfulMap。
+3. 将整个 `plugins/ColorfulMap/maps` 复制为 `plugins/ReColorfulMap/maps`，
+   **包括 `maps.yml` 和所有 UUID 子目录**。路径以插件实际数据目录为准，默认是 `plugins/ReColorfulMap`。
+4. 保留原世界存档及地图 ID 数据，启动服务器即可，无需执行转换命令。
+
+旧版已悬挂的地图和未放置的整幅地图画都可以继续使用，完整的旧版墙面阵列也支持整幅取回。
+放置、取回时会保留图片文件和已有地图 ID 索引，避免其他地图副本失效。
+备份时请同时保存 `maps` 目录、世界存档和玩家数据。
+
+本仓库此前的 PDC 图片存储方案已废弃，不提供迁移兼容。
+文件格式、兼容范围及验证说明见 [地图画存储说明](docs/storage.md)。
 
 ### 配置文件参考
 

@@ -2,6 +2,7 @@ package cn.lunadeer.reColorfulMap.utils.VaultConnect;
 
 import cn.lunadeer.reColorfulMap.utils.XLogger;
 import net.milkbowl.vault.economy.Economy;
+import net.milkbowl.vault.economy.EconomyResponse;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -33,12 +34,18 @@ public class Vault implements VaultInterface {
 
     @Override
     public void withdrawPlayer(Player player, double amount) {
-        econ.withdrawPlayer(player, amount);
+        EconomyResponse response = econ.withdrawPlayer(player, amount);
+        if (!response.transactionSuccess()) {
+            throw new IllegalStateException(response.errorMessage);
+        }
     }
 
     @Override
     public void depositPlayer(Player player, double amount) {
-        econ.depositPlayer(player, amount);
+        EconomyResponse response = econ.depositPlayer(player, amount);
+        if (!response.transactionSuccess()) {
+            throw new IllegalStateException(response.errorMessage);
+        }
     }
 
     @Override

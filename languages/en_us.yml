@@ -7,15 +7,15 @@ image-renderer:
   fail-to-render: 'Failed to render image: %s'
   image-too-large: image (%d x %d) is too large.
 image-map-item:
-  image-corrupt: Image corrupted, cannot load. Please regenerate.
+  image-corrupt: Image files are missing or corrupted; check the server log.
   url-not-allowed: This image URL (%s) is not allowed
   read-image-failed: Failed to read image, please check if the image URL is correct or change the image host
   image-size-not-allowed: Image too large, resolution must not exceed %dx%d
   matrix-generate-failed: Failed to generate image matrix
-  removed-image-tiles: Removed %d unused image tiles.
+  removed-image-tiles: Removed %d temporary files. Saved artworks were kept.
 to-map-command:
   usage: Usage /tomap <image-url> [scale (optional, default 1)]
-  scale-must-be-number: Scale must be a number.
+  scale-must-be-number: Scale must be a finite positive number and produce an image at least 1x1 pixel.
   generating-map: Generating map...
   generated-map: 'Generated map, frame size: %d x %d'
   generate-map-failed: 'Failed to generate map: %s'
@@ -26,6 +26,13 @@ image-map-event:
   hook-economy-failed: Failed to hook economy plugin.
   balance-not-enough: Not enough balance to place image map.
   price-info: 'Matrix size: %d x %d, unit price: %f, total price: %f, your balance: %f'
+  occupied-item-frame: All item frames must be empty.
+  inconsistent-item-frame-array: The item frame array is incomplete or contains a different image.
+  protected-item-frame: You cannot modify one or more of these item frames.
+  map-changed: The held map or item frames changed. Please try again.
+  unowned-region: The image crosses a server region that cannot be modified from here.
+  unloaded-chunk: Some item frames are in unloaded chunks. Load the entire image area and try again.
+  operation-failed: 'Failed to update image map: %s'
 reload-command:
   reloading-config: Reloading configuration file...
   reload-config-success: Configuration file reloaded successfully!

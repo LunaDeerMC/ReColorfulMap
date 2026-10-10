@@ -2,11 +2,9 @@ package cn.lunadeer.reColorfulMap.utils;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import java.awt.Graphics2D;
 import java.io.File;
 import java.io.IOException;
-import java.util.Base64;
 
 public class ImageUtils {
 
@@ -62,32 +60,6 @@ public class ImageUtils {
     }
 
     /**
-     * Decodes a Base64 encoded string to a BufferedImage.
-     *
-     * @param base64 The Base64 encoded string representing the image.
-     * @return The decoded BufferedImage.
-     * @throws IOException If an error occurs while decoding the image.
-     */
-    public static BufferedImage decodeBase64ToImage(byte[] base64) throws IOException {
-        ByteArrayInputStream bis = new ByteArrayInputStream(base64);
-        return ImageIO.read(bis);
-    }
-
-    /**
-     * Encodes a BufferedImage to a Base64 encoded string.
-     *
-     * @param image  The BufferedImage to encode.
-     * @param format The format of the image (e.g., "png", "jpg").
-     * @return The Base64 encoded string representing the image.
-     * @throws IOException If an error occurs while encoding the image.
-     */
-    public static byte[] encodeImageToBase64(BufferedImage image, String format) throws IOException {
-        ByteArrayOutputStream ba_os = new ByteArrayOutputStream();
-        ImageIO.write(image, format, ba_os);
-        return ba_os.toByteArray();
-    }
-
-    /**
      * Resizes a BufferedImage by a given scale.
      *
      * @param image The original BufferedImage to resize.
@@ -95,10 +67,15 @@ public class ImageUtils {
      * @return The resized BufferedImage.
      */
     public static BufferedImage resize(BufferedImage image, float scale) {
-        int new_width = (int) (image.getWidth() * scale);
-        int new_height = (int) (image.getHeight() * scale);
+        int new_width = Math.max(1, (int) (image.getWidth() * (double) scale));
+        int new_height = Math.max(1, (int) (image.getHeight() * (double) scale));
         BufferedImage newImage = new BufferedImage(new_width, new_height, BufferedImage.TYPE_INT_ARGB);
-        newImage.getGraphics().drawImage(image, 0, 0, new_width, new_height, null);
+        Graphics2D graphics = newImage.createGraphics();
+        try {
+            graphics.drawImage(image, 0, 0, new_width, new_height, null);
+        } finally {
+            graphics.dispose();
+        }
         return newImage;
     }
 
@@ -114,7 +91,12 @@ public class ImageUtils {
         int image_width = image.getWidth();
         int image_height = image.getHeight();
         BufferedImage newImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        newImage.getGraphics().drawImage(image, (width - image_width) / 2, (height - image_height) / 2, null);
+        Graphics2D graphics = newImage.createGraphics();
+        try {
+            graphics.drawImage(image, (width - image_width) / 2, (height - image_height) / 2, null);
+        } finally {
+            graphics.dispose();
+        }
         return newImage;
     }
 

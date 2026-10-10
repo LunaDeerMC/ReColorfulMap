@@ -1,16 +1,13 @@
 package cn.lunadeer.reColorfulMap.events;
 
 import cn.lunadeer.reColorfulMap.ImageRenderer;
-import cn.lunadeer.reColorfulMap.PDCImageManager;
-import cn.lunadeer.reColorfulMap.utils.ImageUtils;
-import cn.lunadeer.reColorfulMap.utils.XLogger;
+import cn.lunadeer.reColorfulMap.ReColorfulMap;
+import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import org.bukkit.World;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.server.MapInitializeEvent;
 import org.bukkit.map.MapView;
-
-import java.awt.image.BufferedImage;
 
 public class MapInitEvent implements Listener {
     @EventHandler
@@ -20,16 +17,13 @@ public class MapInitEvent implements Listener {
         if (world == null) {
             return;
         }
-        byte[] base64 = PDCImageManager.getImageBase64WorldPDC(world, view.getId());
-        if (base64 == null) {
-            return;
-        }
-        try {
-            view.getRenderers().clear();
-            BufferedImage image = ImageUtils.decodeBase64ToImage(base64);
-            view.addRenderer(new ImageRenderer(image));
-        } catch (Exception e) {
-            XLogger.warn(e.getMessage());
-        }
+        MapStorage storage = ReColorfulMap.getInstance().getMapStorage();
+        storage.find(world.getName(), view.getId()).ifPresent(reference -> {
+            for (var renderer : view.getRenderers()) {
+                view.removeRenderer(renderer);
+            }
+            // Register a lazy renderer: startup reads the index, not every saved PNG.
+            view.addRenderer(new ImageRenderer(storage, reference));
+        });
     }
 }

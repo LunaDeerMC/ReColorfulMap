@@ -58,15 +58,17 @@ public class VaultConnect implements Listener {
     }
 
     public void withdrawPlayer(Player player, double amount) {
-        if (economyAvailable()) {
-            vaultInstance.withdrawPlayer(player, amount);
+        if (!economyAvailable()) {
+            throw new IllegalStateException("Economy service is unavailable");
         }
+        vaultInstance.withdrawPlayer(player, amount);
     }
 
     public void depositPlayer(Player player, double amount) {
-        if (economyAvailable()) {
-            vaultInstance.depositPlayer(player, amount);
+        if (!economyAvailable()) {
+            throw new IllegalStateException("Economy service is unavailable");
         }
+        vaultInstance.depositPlayer(player, amount);
     }
 
     public double getBalance(Player player) {

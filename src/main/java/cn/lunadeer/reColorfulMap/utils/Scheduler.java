@@ -1,6 +1,7 @@
 package cn.lunadeer.reColorfulMap.utils;
 
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.entity.Player;
 
 import java.util.concurrent.TimeUnit;
 
@@ -20,7 +21,7 @@ public class Scheduler {
     public static void cancelAll() {
         if (instance.isPaper) {
             instance.plugin.getServer().getGlobalRegionScheduler().cancelTasks(instance.plugin);
-            instance.plugin.getServer().getGlobalRegionScheduler().cancelTasks(instance.plugin);
+            instance.plugin.getServer().getAsyncScheduler().cancelTasks(instance.plugin);
         } else {
             instance.plugin.getServer().getScheduler().cancelTasks(instance.plugin);
         }
@@ -54,6 +55,33 @@ public class Scheduler {
             instance.plugin.getServer().getGlobalRegionScheduler().run(instance.plugin, (plugin) -> task.run());
         } else {
             instance.plugin.getServer().getScheduler().runTask(instance.plugin, task);
+        }
+    }
+
+    /** Run player/world mutations on the player's owning region, including after async downloads. */
+    public static void runTask(Player player, Runnable task, Runnable retired) {
+        if (!instance.plugin.isEnabled()) {
+            retired.run();
+            return;
+        }
+        if (instance.isPaper) {
+            if (player.getScheduler().run(instance.plugin, scheduled -> {
+                if (player.isOnline()) {
+                    task.run();
+                } else {
+                    retired.run();
+                }
+            }, retired) == null) {
+                retired.run();
+            }
+        } else {
+            instance.plugin.getServer().getScheduler().runTask(instance.plugin, () -> {
+                if (player.isOnline()) {
+                    task.run();
+                } else {
+                    retired.run();
+                }
+            });
         }
     }
 

@@ -5,6 +5,7 @@ import cn.lunadeer.reColorfulMap.commands.Reload;
 import cn.lunadeer.reColorfulMap.commands.ToMap;
 import cn.lunadeer.reColorfulMap.events.ImageMapEvent;
 import cn.lunadeer.reColorfulMap.events.MapInitEvent;
+import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.utils.Notification;
 import cn.lunadeer.reColorfulMap.utils.Scheduler;
 import cn.lunadeer.reColorfulMap.utils.XLogger;
@@ -13,6 +14,7 @@ import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationPart;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Objects;
+import java.io.IOException;
 
 public final class ReColorfulMap extends JavaPlugin {
 
@@ -32,6 +34,14 @@ public final class ReColorfulMap extends JavaPlugin {
         Configuration.load(ReColorfulMap.getInstance().getServer().getConsoleSender());
         XLogger.setDebug(Configuration.debug);
         XLogger.info(Language.reColorfulMapText.loading);
+
+        try {
+            mapStorage = new MapStorage(getDataFolder().toPath());
+        } catch (IOException e) {
+            getLogger().log(java.util.logging.Level.SEVERE, "Cannot open maps storage; existing data was not replaced", e);
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
         // https://patorjk.com/software/taag/#p=display&f=Big&t=reColorfulMap
         XLogger.info("            _____      _             __       _ __  __");
@@ -58,10 +68,17 @@ public final class ReColorfulMap extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        // Plugin shutdown logic
+        if (Scheduler.instance != null) {
+            Scheduler.cancelAll();
+        }
     }
 
     private static ReColorfulMap instance;
+    private MapStorage mapStorage;
+
+    public MapStorage getMapStorage() {
+        return Objects.requireNonNull(mapStorage, "Map storage has not been initialized");
+    }
 
     public static ReColorfulMap getInstance() {
         return instance;

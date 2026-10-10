@@ -1,7 +1,9 @@
 package cn.lunadeer.reColorfulMap;
 
-import cn.lunadeer.reColorfulMap.utils.ImageUtils;
-import cn.lunadeer.reColorfulMap.utils.Notification;
+import cn.lunadeer.reColorfulMap.storage.MapStorage;
+import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
+import cn.lunadeer.reColorfulMap.utils.Scheduler;
+import cn.lunadeer.reColorfulMap.utils.XLogger;
 import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationPart;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.meta.MapMeta;
@@ -11,53 +13,76 @@ import org.bukkit.map.MapView;
 import org.jetbrains.annotations.NotNull;
 
 import java.awt.image.BufferedImage;
+import java.util.Collections;
+import java.util.Objects;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 public class ImageRenderer extends MapRenderer {
-
     public static class ImageRendererText extends ConfigurationPart {
         public String failToRender = "Failed to render image: %s";
         public String imageTooLarge = "image (%d x %d) is too large.";
     }
 
+    // 128 RGBA map images use about 8 MiB; map aliases share the same cache entry.
+    private static final ImageCache IMAGES = new ImageCache(128, Scheduler::runTaskAsync,
+            (reference, error) -> XLogger.warn("Cannot load map image %s: %s", reference.path(), error.getMessage()));
+
+    // Compatibility-only constructor. Production renderers hold file references, not pixels.
+    private final BufferedImage directImage;
+    private final MapStorage storage;
+    private final ImageReference reference;
+    private final Set<MapCanvas> rendered = Collections.newSetFromMap(new WeakHashMap<>());
+
     public ImageRenderer(BufferedImage image) {
-        this.image = image;
+        this.directImage = Objects.requireNonNull(image);
+        this.storage = null;
+        this.reference = null;
     }
 
-    private final BufferedImage image;
+    /** Attaching this renderer does not open or decode a PNG. */
+    public ImageRenderer(MapStorage storage, ImageReference reference) {
+        this.directImage = null;
+        this.storage = Objects.requireNonNull(storage);
+        this.reference = Objects.requireNonNull(reference);
+    }
 
-    /**
-     * Render to the given map.
-     *
-     * @param map    The MapView being rendered to.
-     * @param canvas The canvas to use for rendering.
-     * @param player The player who triggered the rendering.
-     */
+    /** Reuse already validated pixels without keeping another permanent per-map copy. */
+    public ImageRenderer(MapStorage storage, ImageReference reference, BufferedImage image) {
+        this(storage, reference);
+        IMAGES.put(storage, reference, image);
+    }
+
     @Override
-    public void render(@NotNull MapView map, @NotNull MapCanvas canvas, @NotNull Player player) {
-        try {
-            if (image.getWidth() > 128 || image.getHeight() > 128) {
-                throw new Exception(Language.imageRenderer.imageTooLarge.formatted(image.getWidth(), image.getHeight()));
-            }
-            int x_offset = (128 - image.getWidth()) / 2;
-            int y_offset = (128 - image.getHeight()) / 2;
-            canvas.drawImage(x_offset, y_offset, image);
-        } catch (Exception e) {
-            Notification.error(player, Language.imageRenderer.failToRender.formatted(e.getMessage()));
+    public synchronized void render(@NotNull MapView map, @NotNull MapCanvas canvas, @NotNull Player player) {
+        if (rendered.contains(canvas)) {
+            return;
         }
-    }
-
-    public static MapMeta renderOnMeta(MapMeta meta, byte[] base64) throws Exception {
-        BufferedImage image = ImageUtils.decodeBase64ToImage(base64);
-        return renderOnMeta(meta, image);
+        BufferedImage image = directImage != null ? directImage : IMAGES.getOrRequest(storage, reference);
+        if (image == null) {
+            return;
+        }
+        canvas.drawImage((128 - image.getWidth()) / 2, (128 - image.getHeight()) / 2, image);
+        rendered.add(canvas);
     }
 
     public static MapMeta renderOnMeta(MapMeta meta, BufferedImage image) throws Exception {
+        return renderOnMeta(meta, new ImageRenderer(image));
+    }
+
+    public static MapMeta renderOnMeta(MapMeta meta, BufferedImage image, MapStorage storage, ImageReference reference) throws Exception {
+        return renderOnMeta(meta, new ImageRenderer(storage, reference, image));
+    }
+
+    private static MapMeta renderOnMeta(MapMeta meta, ImageRenderer renderer) throws Exception {
         MapView view = meta.getMapView();
         if (view == null) {
             throw new Exception("MapMeta does not have a MapView.");
         }
-        view.getRenderers().clear();
-        view.addRenderer(new ImageRenderer(image));
+        for (MapRenderer existing : view.getRenderers()) {
+            view.removeRenderer(existing);
+        }
+        view.addRenderer(renderer);
         meta.setMapView(view);
         return meta;
     }
