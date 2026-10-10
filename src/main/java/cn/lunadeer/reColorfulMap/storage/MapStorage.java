@@ -1,9 +1,5 @@
 package cn.lunadeer.reColorfulMap.storage;
 
-import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.configuration.InvalidConfigurationException;
-import org.bukkit.configuration.file.YamlConfiguration;
-
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
@@ -11,7 +7,6 @@ import javax.imageio.stream.MemoryCacheImageInputStream;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -19,22 +14,18 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * ColorfulMap 2.3's on-disk format: maps/maps.yml indexes immutable PNG files in
- * maps/&lt;artwork UUID&gt;/. Only references are kept in memory; image pixels never
- * belong in a world's or an item's persistent data container.
+ * Immutable PNG files in maps/&lt;artwork UUID&gt;/. Each map item carries its own
+ * relative image path; there is no map-ID index or image data in PDC.
  */
 public final class MapStorage {
     private static final int TILE_SIZE = 128;
@@ -43,21 +34,11 @@ public final class MapStorage {
     private static final Pattern IMAGE_PATH = Pattern.compile("maps/(" + UUID_PATTERN + ")/(thumb\\.png|(?:0|[1-9][0-9]*)_(?:0|[1-9][0-9]*)\\.png)");
     // This namespace is reserved for this implementation, never legacy artwork directories.
     private static final String TEMP_PREFIX = ".recolorfulmap-";
-    private static final Pattern TEMP_NAME = Pattern.compile("\\.recolorfulmap-(?:artwork|index)-" + UUID_PATTERN + "\\.tmp");
+    private static final Pattern TEMP_NAME = Pattern.compile("\\.recolorfulmap-(?:artwork|delete)-" + UUID_PATTERN + "\\.tmp");
 
     private final Path mapsDirectory;
-    private final Path indexFile;
     private final Set<Path> activeStaging = ConcurrentHashMap.newKeySet();
-    private volatile Map<MapKey, ImageReference> index;
-
-    public record MapKey(String world, int id) {
-        public MapKey {
-            Objects.requireNonNull(world, "world");
-            if (world.isEmpty() || world.indexOf('\0') >= 0 || id < 0) {
-                throw new IllegalArgumentException("Invalid world or map ID");
-            }
-        }
-    }
+    private final Set<UUID> deletedArtworks = ConcurrentHashMap.newKeySet();
 
     /** Tile coordinates start at the top left, as in ColorfulMap 2.3. */
     public record ImageReference(UUID artwork, int x, int y) {
@@ -74,6 +55,30 @@ public final class MapStorage {
 
         public String path() {
             return "maps/" + artwork + "/" + (thumbnail() ? "thumb.png" : x + "_" + y + ".png");
+        }
+
+        /** Accepts only canonical relative paths, never absolute paths or traversal. */
+        public static Optional<ImageReference> parse(String path) {
+            if (path == null) {
+                return Optional.empty();
+            }
+            Matcher matcher = IMAGE_PATH.matcher(path);
+            if (!matcher.matches()) {
+                return Optional.empty();
+            }
+            try {
+                UUID id = UUID.fromString(matcher.group(1));
+                if (matcher.group(2).equals("thumb.png")) {
+                    return Optional.of(thumbnail(id));
+                }
+                Matcher tile = TILE_NAME.matcher(matcher.group(2));
+                if (!tile.matches()) {
+                    return Optional.empty();
+                }
+                return Optional.of(tile(id, Integer.parseInt(tile.group(1)), Integer.parseInt(tile.group(2))));
+            } catch (IllegalArgumentException exception) {
+                return Optional.empty();
+            }
         }
 
         public static ImageReference thumbnail(UUID artwork) {
@@ -105,35 +110,13 @@ public final class MapStorage {
             throw new IOException("The maps directory must not be a symbolic link: " + mapsDirectory);
         }
         Files.createDirectories(mapsDirectory);
-        indexFile = mapsDirectory.resolve("maps.yml");
-        index = Map.copyOf(loadIndex());
-    }
-
-    public Optional<ImageReference> find(String world, int mapId) {
-        return Optional.ofNullable(index.get(new MapKey(world, mapId)));
-    }
-
-    /**
-     * Persists a complete batch before publishing it to readers. Existing aliases
-     * remain valid forever, including aliases used by cloned items or other worlds.
-     */
-    public synchronized void register(Map<MapKey, ImageReference> additions) throws IOException {
-        Objects.requireNonNull(additions, "additions");
-        Map<MapKey, ImageReference> updated = new HashMap<>(index);
-        for (Map.Entry<MapKey, ImageReference> entry : additions.entrySet()) {
-            MapKey key = Objects.requireNonNull(entry.getKey(), "map key");
-            ImageReference reference = Objects.requireNonNull(entry.getValue(), "image reference");
-            ImageReference existing = updated.putIfAbsent(key, reference);
-            if (existing != null && !existing.equals(reference)) {
-                throw new IOException("Map " + key.world() + "/" + key.id() + " already refers to " + existing.path());
+        for (String name : new String[]{"maps.yml", "maps.yaml"}) {
+            Path legacyIndex = mapsDirectory.resolve(name);
+            if (Files.exists(legacyIndex, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Legacy map index found: " + legacyIndex
+                        + ". Stop the server and run the offline migration script before starting ReColorfulMap.");
             }
         }
-        if (updated.equals(index)) {
-            return;
-        }
-        Map<MapKey, ImageReference> snapshot = Map.copyOf(updated);
-        persistIndex(snapshot);
-        index = snapshot;
     }
 
     /** Writes every file into a private directory, then exposes the complete artwork atomically. */
@@ -240,7 +223,40 @@ public final class MapStorage {
         }
     }
 
-    /** Deletes only abandoned private staging files, never artwork or map-ID aliases. */
+    /**
+     * Unpublishes the directory atomically before removing its contents. The caller
+     * decides when all items referencing the artwork should become invalid.
+     */
+    public synchronized boolean deleteArtwork(UUID id) throws IOException {
+        Objects.requireNonNull(id, "id");
+        checkMapsDirectory();
+        Path directory = mapsDirectory.resolve(id.toString());
+        if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unsafe artwork directory: " + directory);
+        }
+        Path temporary = mapsDirectory.resolve(TEMP_PREFIX + "delete-" + UUID.randomUUID() + ".tmp");
+        activeStaging.add(temporary);
+        try {
+            Files.move(directory, temporary, StandardCopyOption.ATOMIC_MOVE);
+            deletedArtworks.add(id);
+            // walkFileTree does not follow symbolic links, including any stored inside this directory.
+            deleteTree(temporary);
+            return true;
+        } finally {
+            // If removal fails, cleanup can retry the already unpublished directory.
+            activeStaging.remove(temporary);
+        }
+    }
+
+    /** Remembers deletion for this process so decoded image caches can invalidate their entries. */
+    public boolean isDeleted(UUID id) {
+        return deletedArtworks.contains(Objects.requireNonNull(id, "id"));
+    }
+
+    /** Deletes only abandoned private staging files, never published artwork directories. */
     public synchronized int cleanTemporaryFiles() throws IOException {
         checkMapsDirectory();
         int cleaned = 0;
@@ -255,92 +271,6 @@ public final class MapStorage {
             }
         }
         return cleaned;
-    }
-
-    public int size() {
-        return index.size();
-    }
-
-    private Map<MapKey, ImageReference> loadIndex() throws IOException {
-        if (!Files.exists(indexFile, LinkOption.NOFOLLOW_LINKS)) {
-            return new HashMap<>();
-        }
-        requireRegularFile(indexFile);
-        YamlConfiguration yaml = newYaml();
-        try {
-            yaml.loadFromString(Files.readString(indexFile, StandardCharsets.UTF_8));
-        } catch (InvalidConfigurationException exception) {
-            throw new IOException("Invalid map index: " + indexFile, exception);
-        }
-        Map<MapKey, ImageReference> loaded = new HashMap<>();
-        for (String world : yaml.getKeys(false)) {
-            ConfigurationSection section = yaml.getConfigurationSection(world);
-            if (section == null) {
-                throw new IOException("Expected a world section in map index: " + world);
-            }
-            for (String id : section.getKeys(false)) {
-                Object value = section.get(id);
-                if (!(value instanceof String path)) {
-                    throw new IOException("Invalid image path for " + world + "/" + id);
-                }
-                try {
-                    MapKey key = new MapKey(world, Integer.parseInt(id));
-                    ImageReference reference = parseReference(path);
-                    if (loaded.putIfAbsent(key, reference) != null) {
-                        throw new IOException("Duplicate map ID: " + world + "/" + id);
-                    }
-                } catch (IllegalArgumentException exception) {
-                    throw new IOException("Invalid map index entry: " + world + "/" + id, exception);
-                }
-            }
-        }
-        return loaded;
-    }
-
-    private static ImageReference parseReference(String path) throws IOException {
-        Matcher matcher = IMAGE_PATH.matcher(path);
-        if (!matcher.matches()) {
-            throw new IOException("Unsupported map image path: " + path);
-        }
-        UUID id = UUID.fromString(matcher.group(1));
-        if (matcher.group(2).equals("thumb.png")) {
-            return ImageReference.thumbnail(id);
-        }
-        Matcher tile = TILE_NAME.matcher(matcher.group(2));
-        if (!tile.matches()) {
-            throw new IOException("Invalid tile path: " + path);
-        }
-        return ImageReference.tile(id, Integer.parseInt(tile.group(1)), Integer.parseInt(tile.group(2)));
-    }
-
-    private void persistIndex(Map<MapKey, ImageReference> updated) throws IOException {
-        checkMapsDirectory();
-        if (Files.exists(indexFile, LinkOption.NOFOLLOW_LINKS)) {
-            requireRegularFile(indexFile);
-        }
-        YamlConfiguration yaml = newYaml();
-        Map<String, Map<Integer, ImageReference>> worlds = new TreeMap<>();
-        updated.forEach((key, value) -> worlds.computeIfAbsent(key.world(), ignored -> new TreeMap<>()).put(key.id(), value));
-        worlds.forEach((world, images) -> {
-            ConfigurationSection section = yaml.createSection(world);
-            images.forEach((id, reference) -> section.set(Integer.toString(id), reference.path()));
-        });
-        Path temporary = mapsDirectory.resolve(TEMP_PREFIX + "index-" + UUID.randomUUID() + ".tmp");
-        try {
-            Files.writeString(temporary, yaml.saveToString(), StandardCharsets.UTF_8,
-                    java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE);
-            // Never fall back to a non-atomic replacement: failure must preserve the old index.
-            Files.move(temporary, indexFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally {
-            deleteTemporaryQuietly(temporary);
-        }
-    }
-
-    private static YamlConfiguration newYaml() {
-        YamlConfiguration yaml = new YamlConfiguration();
-        // World names may contain dots. They are literal top-level YAML keys.
-        yaml.options().pathSeparator('\0');
-        return yaml;
     }
 
     private Path artworkDirectory(UUID id) throws IOException {
@@ -361,7 +291,7 @@ public final class MapStorage {
 
     private static void requireRegularFile(Path file) throws IOException {
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("Missing or unsafe image/index file: " + file);
+            throw new IOException("Missing or unsafe image file: " + file);
         }
     }
 

@@ -1,116 +1,104 @@
 package cn.lunadeer.reColorfulMap;
 
-import cn.lunadeer.reColorfulMap.storage.MapStorage;
+import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Material;
-import org.bukkit.World;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
-import org.bukkit.map.MapView;
-import org.junit.jupiter.api.BeforeEach;
+import org.bukkit.persistence.PersistentDataType;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
-import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
 import static cn.lunadeer.reColorfulMap.LegacyMapFixture.ARTWORK;
-import static cn.lunadeer.reColorfulMap.LegacyMapFixture.OTHER_ARTWORK;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
+/** Runtime recognition depends exclusively on the item's PDC; offline migration has separate tests. */
 class ImageMapItemCompatibilityTest {
-    @TempDir Path directory;
-    private MapStorage storage;
+    @Test
+    void identifiesTaggedThumbnailWithoutMapViewOrLore() {
+        ItemStack item = map(ImageReference.thumbnail(ARTWORK));
 
-    @BeforeEach
-    void copyLegacyDirectory() throws Exception {
-        storage = LegacyMapFixture.copyTo(directory);
+        assertEquals(Optional.of(ARTWORK), ImageMapItem.identify(item));
+        assertTrue(ImageMapItem.isImageMap(item));
+        verify((MapMeta) item.getItemMeta(), never()).getMapView();
+        verify(item.getItemMeta(), never()).lore();
     }
 
     @Test
-    void recognizesExact23LoreWithUuidInHoverWithoutIndexEntry() {
-        ItemStack item = map("world", 800, List.of(legacyLore()));
+    void taggedTileCannotBecomeWholeArtworkByCopyingThumbnailLore() {
+        ItemStack item = map(ImageReference.tile(ARTWORK, 1, 0));
+        ((MapMeta) item.getItemMeta()).lore(List.of(legacyLore()));
 
-        assertEquals(Optional.of(ARTWORK), ImageMapItem.identify(item, storage));
+        assertTrue(ImageMapItem.identify(item).isEmpty());
+        assertFalse(ImageMapItem.isImageMap(item));
+        assertTrue(MapItemData.hasImage(item));
     }
 
     @Test
-    void recognizesSerializedTextChildrenInLegacySizeAndHover() {
-        Component lore = Component.empty().append(Component.text("size: "))
-                .append(Component.text("3x2"))
-                .hoverEvent(Component.empty().append(Component.text(ARTWORK.toString())));
+    void legacyLoreAloneDoesNotClaimMapWithoutMigratedPdc() {
+        ItemStack item = map(null);
+        ((MapMeta) item.getItemMeta()).lore(List.of(legacyLore()));
 
-        assertEquals(Optional.of(ARTWORK), ImageMapItem.legacyArtwork(List.of(lore)));
+        assertTrue(ImageMapItem.identify(item).isEmpty());
+        assertFalse(ImageMapItem.isImageMap(item));
     }
 
     @Test
-    void resolvesLegacyThumbnailWithOnlyWorldAndMapId() {
-        ItemStack item = map("world", 123, null);
-
-        assertEquals(Optional.of(ARTWORK), ImageMapItem.identify(item, storage));
-        verify(item.getItemMeta(), never()).getPersistentDataContainer();
-        verify(((MapMeta) item.getItemMeta()).getMapView().getWorld(), never()).getPersistentDataContainer();
+    void changingOrRemovingLorePreservesTaggedArtworkIdentity() {
+        ItemStack item = map(ImageReference.thumbnail(ARTWORK));
+        ((MapMeta) item.getItemMeta()).lore(List.of(Component.text("My renamed artwork")));
+        assertEquals(Optional.of(ARTWORK), ImageMapItem.identify(item));
+        ((MapMeta) item.getItemMeta()).lore(null);
+        assertEquals(Optional.of(ARTWORK), ImageMapItem.identify(item));
     }
 
     @Test
-    void resolvesUsingMapViewsOwnWorldName() {
-        assertEquals(Optional.of(OTHER_ARTWORK), ImageMapItem.identify(map("world_nether", 123, null), storage));
+    void malformedTaggedPathIsClaimedSoVanillaCannotConsumeTheBrokenArtwork() {
+        ItemStack item = map(null);
+        item.getItemMeta().getPersistentDataContainer().set(MapItemData.IMAGE_PATH,
+                PersistentDataType.STRING, "maps/../../outside.png");
+
+        assertTrue(ImageMapItem.isImageMap(item));
+        assertTrue(ImageMapItem.identify(item).isEmpty());
     }
 
     @Test
-    void indexedTileCannotBecomeWholeArtworkByCopyingThumbnailLore() {
-        assertTrue(ImageMapItem.identify(map("world", 125, List.of(legacyLore())), storage).isEmpty());
-    }
-
-    @Test
-    void ordinaryMapAndOrdinaryLoreRemainVanilla() {
-        assertTrue(ImageMapItem.identify(map("world", 700, null), storage).isEmpty());
-        assertTrue(ImageMapItem.identify(map("world", 700, List.of(Component.text("My home"))), storage).isEmpty());
-        assertTrue(ImageMapItem.identify(map("world", 700, List.of(Component.text("size: 3x2"))), storage).isEmpty());
-        assertTrue(ImageMapItem.identify(null, storage).isEmpty());
+    void ordinaryMapAndNonMapItemsRemainVanilla() {
+        assertTrue(ImageMapItem.identify(map(null)).isEmpty());
+        assertFalse(ImageMapItem.isImageMap(map(null)));
+        assertTrue(ImageMapItem.identify(null).isEmpty());
+        assertFalse(ImageMapItem.isImageMap(null));
         ItemStack stone = mock(ItemStack.class);
         when(stone.getType()).thenReturn(Material.STONE);
-        assertTrue(ImageMapItem.identify(stone, storage).isEmpty());
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"size: 0x2", "size: -3x2", "size: 3x0", "size: 3x2147483648", "size: 3x2 suffix", "size: 03x2"})
-    void malformedLegacyDimensionsDoNotClaimOrdinaryMaps(String text) {
-        Component lore = Component.text(text).hoverEvent(Component.text(ARTWORK.toString()));
-
-        assertTrue(ImageMapItem.identify(map("world", 700, List.of(lore)), storage).isEmpty());
+        assertTrue(ImageMapItem.identify(stone).isEmpty());
+        assertFalse(ImageMapItem.isImageMap(stone));
     }
 
     @Test
-    void invalidOrAbbreviatedUuidAndMultipleLoreLinesAreRejected() {
-        assertTrue(ImageMapItem.legacyArtwork(List.of(Component.text("size: 3x2")
-                .hoverEvent(Component.text("not-a-uuid")))).isEmpty());
-        assertTrue(ImageMapItem.legacyArtwork(List.of(Component.text("size: 3x2")
-                .hoverEvent(Component.text("1-1-1-1-1")))).isEmpty());
-        assertTrue(ImageMapItem.legacyArtwork(List.of(legacyLore(), Component.text("My map"))).isEmpty());
+    void metadataClonePreservesPathWithoutSharingMutablePdc() {
+        MapMeta original = LegacyMapFixture.mapMeta(null);
+        MapItemData.setReference(original, ImageReference.thumbnail(ARTWORK));
+        MapMeta copy = original.clone();
+        MapItemData.setReference(copy, ImageReference.tile(ARTWORK, 2, 1));
+
+        assertEquals(ImageReference.thumbnail(ARTWORK).path(),
+                original.getPersistentDataContainer().get(MapItemData.IMAGE_PATH, PersistentDataType.STRING));
+        assertEquals(ImageReference.tile(ARTWORK, 2, 1).path(),
+                copy.getPersistentDataContainer().get(MapItemData.IMAGE_PATH, PersistentDataType.STRING));
     }
 
     private static Component legacyLore() {
         return Component.text("size: 3x2").hoverEvent(Component.text(ARTWORK.toString()));
     }
 
-    private static ItemStack map(String worldName, int id, List<Component> lore) {
-        World world = mock(World.class);
-        when(world.getName()).thenReturn(worldName);
-        MapView view = mock(MapView.class);
-        when(view.getWorld()).thenReturn(world);
-        when(view.getId()).thenReturn(id);
-        MapMeta meta = mock(MapMeta.class);
-        when(meta.getMapView()).thenReturn(view);
-        when(meta.lore()).thenReturn(lore);
+    private static ItemStack map(ImageReference reference) {
+        MapMeta meta = LegacyMapFixture.mapMeta(null);
+        if (reference != null) {
+            MapItemData.setReference(meta, reference);
+        }
         ItemStack item = mock(ItemStack.class);
         when(item.getType()).thenReturn(Material.FILLED_MAP);
         when(item.getItemMeta()).thenReturn(meta);

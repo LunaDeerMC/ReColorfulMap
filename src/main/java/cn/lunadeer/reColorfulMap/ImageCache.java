@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -40,6 +41,10 @@ final class ImageCache {
 
     /** Returns immediately; aliases share both cached pixels and any outstanding read. */
     BufferedImage getOrRequest(MapStorage storage, ImageReference reference) {
+        if (storage.isDeleted(reference.artwork())) {
+            invalidate(storage, reference.artwork());
+            return null;
+        }
         Key key = key(storage, reference);
         boolean startReader;
         synchronized (this) {
@@ -81,11 +86,21 @@ final class ImageCache {
     }
 
     private void put(Key key, BufferedImage image) {
+        if (key.storage().isDeleted(key.reference().artwork())) {
+            return;
+        }
         images.put(key, image);
         failed.remove(key);
         while (images.size() > capacity) {
             images.remove(images.keySet().iterator().next());
         }
+    }
+
+    synchronized void invalidate(MapStorage storage, UUID artwork) {
+        images.keySet().removeIf(key -> key.storage() == storage && key.reference().artwork().equals(artwork));
+        failed.removeIf(key -> key.storage() == storage && key.reference().artwork().equals(artwork));
+        queue.removeIf(key -> key.storage() == storage && key.reference().artwork().equals(artwork));
+        pending.removeIf(key -> key.storage() == storage && key.reference().artwork().equals(artwork));
     }
 
     private void readQueuedImages() {

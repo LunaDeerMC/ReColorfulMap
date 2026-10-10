@@ -20,7 +20,7 @@
 ReColorfulMap 可以将图片自动转换为地图画阵列，用以方便地悬挂公告、装饰画、地图等。
 
 该插件是 ColorfulMap 的重制版，使用与 ColorfulMap 2.3 相同的文件布局，将 PNG 图片保存在
-`plugins/ReColorfulMap/maps` 中。启动时读取地图 ID 索引，图片按需加载，图片数据不会写入世界或物品 PDC。
+`plugins/ReColorfulMap/maps` 中。地图物品 PDC 只保存对应 PNG 的相对路径，图片按需加载，不再使用地图 ID 索引文件。
 
 不论是 ColorfulMap 还是 ReColorfulMap 它们的实现方式均源自于 [ImageFrame](https://github.com/LOOHP/ImageFrame)
 和 [ImageMaps](https://github.com/SydMontague/ImageMaps). 你可以认为这是简化版的 ImageFrame 或者 ImageMaps 的高版本重置。
@@ -72,23 +72,28 @@ ReColorfulMap 可以将图片自动转换为地图画阵列，用以方便地悬
 | 重载配置     | `/reloadColorfulMap`            | recolorfulmap.admin | op      |
 | 清理临时文件  | `/cleanColorfulMap`             | recolorfulmap.admin | op      |
 
-`/cleanColorfulMap` 仅清理插件写入失败遗留的临时文件，保留地图画 PNG 和地图 ID 索引，
-包括背包、箱子和未加载区块中的地图画所引用的数据。
+`/cleanColorfulMap` 仅清理插件写入或删除失败遗留的临时目录。
+地图物品真正销毁时会自动删除对应图片；放置、取回、拾取及区块卸载保留数据。
 
 ### 从 ColorfulMap 2.3 升级
 
-1. 停服，备份世界存档和 `plugins/ColorfulMap/maps`。
-2. 移除 ColorfulMap 2.3 插件 JAR，安装 ReColorfulMap。
-3. 将整个 `plugins/ColorfulMap/maps` 复制为 `plugins/ReColorfulMap/maps`，
-   **包括 `maps.yml` 和所有 UUID 子目录**。路径以插件实际数据目录为准，默认是 `plugins/ReColorfulMap`。
-4. 保留原世界存档及地图 ID 数据，启动服务器即可，无需执行转换命令。
+1. 停服，备份世界、玩家数据和 `plugins/ColorfulMap`。
+2. 将本仓库整个 `scripts` 目录放入服务器目录，执行离线迁移：
 
-旧版已悬挂的地图和未放置的整幅地图画都可以继续使用，完整的旧版墙面阵列也支持整幅取回。
-放置、取回时会保留图片文件和已有地图 ID 索引，避免其他地图副本失效。
-备份时请同时保存 `maps` 目录、世界存档和玩家数据。
+   ```bash
+   bash scripts/migrate-colorfulmap.sh --server-root . --apply
+   ```
 
-本仓库此前的 PDC 图片存储方案已废弃，不提供迁移兼容。
-文件格式、兼容范围及验证说明见 [地图画存储说明](docs/storage.md)。
+3. 移除旧插件 JAR，安装 ReColorfulMap，再启动服务器。Paper 26.2 使用 Java 25。
+
+脚本将 PNG 复制到 `plugins/ReColorfulMap/maps`，并为已有物品写入图片路径 PDC；
+**仅复制 maps 目录已不能完成本次升级**。默认不带 `--apply` 时只做预检。
+完整旧阵列仍支持从任意分块整幅取回，放置与取回不删除图片。
+同源复制物品共享数据，其中一个真正销毁后不保证其他副本可用。
+
+需要 Linux/macOS 或 WSL、Python 3.10+。默认目录注意 `ReColorfulMap` 的大小写。
+原地迁移、回滚、自动删除覆盖范围及验证说明见 [地图画存储说明](docs/storage.md)。
+本仓库此前的 PDC 图片字节存储方案已废弃，不提供迁移兼容。
 
 ### 配置文件参考
 

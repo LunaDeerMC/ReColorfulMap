@@ -24,7 +24,7 @@ import static org.mockito.Mockito.when;
 
 class ImageMapGeometryTest {
     /** Coordinates copied from the 2.3 top-left PNG convention, for a 3 by 2 artwork. */
-    static Stream<Arguments> legacyWalls() {
+    static Stream<Arguments> artworkWalls() {
         return Stream.of(
                 Arguments.of(BlockFace.NORTH, new int[][]{
                         {10, 65, 20}, {9, 65, 20}, {8, 65, 20},
@@ -42,8 +42,8 @@ class ImageMapGeometryTest {
     }
 
     @ParameterizedTest
-    @MethodSource("legacyWalls")
-    void findsLegacyThreeByTwoPngOrderFromLowerLeft(BlockFace facing, int[][] positions) throws Exception {
+    @MethodSource("artworkWalls")
+    void findsThreeByTwoPngOrderFromLowerLeft(BlockFace facing, int[][] positions) throws Exception {
         World world = mock(World.class);
         when(world.isChunkLoaded(anyInt(), anyInt())).thenReturn(true);
         List<Entity> entities = frames(world, facing, positions);
@@ -61,7 +61,7 @@ class ImageMapGeometryTest {
     }
 
     @ParameterizedTest
-    @MethodSource("legacyWalls")
+    @MethodSource("artworkWalls")
     void refusesIncompleteArrayEvenWhenFrameAtMissingPositionFacesOtherWay(BlockFace facing, int[][] positions) {
         World world = mock(World.class);
         when(world.isChunkLoaded(anyInt(), anyInt())).thenReturn(true);
@@ -75,8 +75,8 @@ class ImageMapGeometryTest {
     }
 
     @ParameterizedTest
-    @MethodSource("legacyWalls")
-    void anyLegacyTileFindsTheSameLowerLeftOrigin(BlockFace facing, int[][] positions) {
+    @MethodSource("artworkWalls")
+    void anyTileFindsTheSameLowerLeftOrigin(BlockFace facing, int[][] positions) {
         World world = mock(World.class);
         Location origin = new Location(world, 10, 64, 20);
         for (int index = 0; index < positions.length; index++) {

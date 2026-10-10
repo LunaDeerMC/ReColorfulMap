@@ -4,7 +4,8 @@ import cn.lunadeer.reColorfulMap.commands.Clean;
 import cn.lunadeer.reColorfulMap.commands.Reload;
 import cn.lunadeer.reColorfulMap.commands.ToMap;
 import cn.lunadeer.reColorfulMap.events.ImageMapEvent;
-import cn.lunadeer.reColorfulMap.events.MapInitEvent;
+import cn.lunadeer.reColorfulMap.events.MapBindingEvent;
+import cn.lunadeer.reColorfulMap.events.MapDestructionEvent;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.utils.Notification;
 import cn.lunadeer.reColorfulMap.utils.Scheduler;
@@ -60,7 +61,10 @@ public final class ReColorfulMap extends JavaPlugin {
         Objects.requireNonNull(getCommand("cleanColorfulMap")).setExecutor(new Clean());
 
         getServer().getPluginManager().registerEvents(new ImageMapEvent(), this);
-        getServer().getPluginManager().registerEvents(new MapInitEvent(), this);
+        MapBindingEvent bindings = new MapBindingEvent(this);
+        getServer().getPluginManager().registerEvents(bindings, this);
+        new MapDestructionEvent(this).register();
+        bindings.bootstrap();
 
         XLogger.info(Language.reColorfulMapText.loaded);
         XLogger.debug("Debug mode is enabled.");

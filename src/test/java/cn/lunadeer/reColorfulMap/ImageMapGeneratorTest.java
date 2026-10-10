@@ -21,7 +21,7 @@ class ImageMapGeneratorTest {
     @TempDir Path directory;
 
     @Test
-    void generatesLegacyFilesFromScaledImageAndPreservesOriginal() throws Exception {
+    void generatesPngFilesFromScaledImageAndPreservesOriginal() throws Exception {
         BufferedImage source = new BufferedImage(600, 400, BufferedImage.TYPE_INT_RGB);
         source.setRGB(100, 100, 0x123456);
         withImageServer(source, url -> {
@@ -37,7 +37,8 @@ class ImageMapGeneratorTest {
             BufferedImage tile = storage.read(MapStorage.ImageReference.tile(art.id(), 0, 0));
             assertEquals(128, tile.getWidth());
             assertEquals(0, tile.getRGB(0, 0)); // centered padding remains transparent
-            assertEquals(0, storage.size()); // no Bukkit map IDs are invented by the background worker
+            assertFalse(Files.exists(directory.resolve("maps/maps.yml")));
+            assertFalse(Files.exists(directory.resolve("maps/maps.yaml")));
         });
     }
 

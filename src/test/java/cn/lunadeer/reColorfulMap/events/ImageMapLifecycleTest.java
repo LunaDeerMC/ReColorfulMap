@@ -2,6 +2,7 @@ package cn.lunadeer.reColorfulMap.events;
 
 import cn.lunadeer.reColorfulMap.Configuration;
 import cn.lunadeer.reColorfulMap.LegacyMapFixture;
+import cn.lunadeer.reColorfulMap.MapItemData;
 import cn.lunadeer.reColorfulMap.ReColorfulMap;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.utils.Notification;
@@ -27,10 +28,10 @@ import org.bukkit.inventory.ItemFactory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.inventory.meta.Damageable;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
 import org.bukkit.plugin.PluginManager;
+import org.bukkit.persistence.PersistentDataType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,7 +69,6 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.withSettings;
 
 class ImageMapLifecycleTest {
     @TempDir Path directory;
@@ -91,7 +91,7 @@ class ImageMapLifecycleTest {
     private final List<String> errors = new ArrayList<>();
 
     @BeforeEach
-    void setupLegacyWorld() throws Exception {
+    void setupImageWorld() throws Exception {
         storage = spy(LegacyMapFixture.copyTo(directory));
         ReColorfulMap plugin = mock(ReColorfulMap.class);
         when(plugin.getMapStorage()).thenReturn(storage);
@@ -116,13 +116,13 @@ class ImageMapLifecycleTest {
                 });
         pluginManager = mock(PluginManager.class);
         bukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
-        // Let Bukkit's real ItemStack copy constructor copy the legacy MapMeta.
+        // Exercise Bukkit's real ItemStack copy constructor and independent PDC metadata clones.
         factory = mock(ItemFactory.class);
         bukkit.when(Bukkit::getItemFactory).thenReturn(factory);
         when(factory.isApplicable(any(ItemMeta.class), any(Material.class))).thenReturn(true);
         when(factory.asMetaFor(any(ItemMeta.class), any(Material.class))).thenAnswer(call -> call.getArgument(0));
         when(factory.updateMaterial(any(ItemMeta.class), any(Material.class))).thenAnswer(call -> call.getArgument(1));
-        when(factory.equals(any(), any())).thenAnswer(call -> call.getArgument(0) == call.getArgument(1));
+        when(factory.equals(any(), any())).thenAnswer(call -> LegacyMapFixture.sameMeta(call.getArgument(0), call.getArgument(1)));
         when(factory.getItemMeta(Material.FILLED_MAP)).thenAnswer(call -> emptyMapMeta());
         world = mock(World.class);
         when(world.getName()).thenReturn("world");
@@ -140,7 +140,7 @@ class ImageMapLifecycleTest {
         when(player.getWorld()).thenReturn(world);
         inventory = mock(PlayerInventory.class);
         when(player.getInventory()).thenReturn(inventory);
-        held = legacyMap(123);
+        held = imageMap(123);
         when(inventory.getItemInMainHand()).thenReturn(held);
         frames = wall(BlockFace.NORTH, new int[][]{
                 {10, 65, 20}, {9, 65, 20}, {8, 65, 20},
@@ -200,7 +200,7 @@ class ImageMapLifecycleTest {
     }
 
     @Test
-    void missingLegacyTileClaimsTheInteractionAndPreservesTheHeldMap() throws Exception {
+    void missingTileClaimsTheInteractionAndPreservesTheHeldMap() throws Exception {
         Files.delete(directory.resolve("maps/" + LegacyMapFixture.ARTWORK + "/1_1.png"));
         PlayerInteractEntityEvent event = placement();
 
@@ -212,7 +212,7 @@ class ImageMapLifecycleTest {
     }
 
     @Test
-    void corruptLegacyPngFailsBeforeAnyPaymentOrFrameChange() throws Exception {
+    void corruptPngFailsBeforeAnyPaymentOrFrameChange() throws Exception {
         Files.writeString(directory.resolve("maps/" + LegacyMapFixture.ARTWORK + "/1_1.png"), "damaged PNG");
         PlayerInteractEntityEvent event = placement();
 
@@ -227,7 +227,7 @@ class ImageMapLifecycleTest {
 
     @Test
     void ordinaryMapIsNotIntercepted() throws Exception {
-        ItemStack ordinary = legacyMap(5000);
+        ItemStack ordinary = imageMap(5000);
         when(inventory.getItemInMainHand()).thenReturn(ordinary);
         PlayerInteractEntityEvent event = placement();
 
@@ -239,7 +239,20 @@ class ImageMapLifecycleTest {
     }
 
     @Test
-    void placingCopiedLegacyThumbnailConsumesOnlyOneAndKeepsEveryLegacyAlias() throws Exception {
+    void malformedTaggedPathCannotBeConsumedAsAnOrdinaryMap() throws Exception {
+        held.getItemMeta().getPersistentDataContainer().set(MapItemData.IMAGE_PATH,
+                PersistentDataType.STRING, "maps/../../outside.png");
+        PlayerInteractEntityEvent event = placement();
+
+        new ImageMapEvent().putImageMapsOnItemFrame(event);
+
+        assertTrue(event.isCancelled());
+        notifications.verify(() -> Notification.error(eq(player), contains("Missing or invalid image map path")));
+        assertUnchanged();
+    }
+
+    @Test
+    void placingCopiedThumbnailConsumesOnlyOneAndKeepsArtworkFiles() throws Exception {
         ItemStack stacked = new ItemStack(Material.FILLED_MAP, 2);
         stacked.setItemMeta(held.getItemMeta());
         when(inventory.getItemInMainHand()).thenReturn(stacked);
@@ -257,12 +270,10 @@ class ImageMapLifecycleTest {
         for (int i = 0; i < frames.size(); i++) {
             ArgumentCaptor<ItemStack> placed = ArgumentCaptor.forClass(ItemStack.class);
             verify(frames.get(i)).setItem(placed.capture(), eq(false));
-            MapMeta meta = (MapMeta) placed.getValue().getItemMeta();
             assertEquals(MapStorage.ImageReference.tile(LegacyMapFixture.ARTWORK, i % 3, i / 3),
-                    storage.find("world", meta.getMapView().getId()).orElseThrow());
-            verify(meta, never()).getPersistentDataContainer();
+                    MapItemData.requireReference(placed.getValue()));
         }
-        assertLegacyAliasesRemain();
+        assertArtworkFilesRemain();
         verify(world, never()).getPersistentDataContainer();
     }
 
@@ -290,11 +301,11 @@ class ImageMapLifecycleTest {
             assertTrue(items.get(items.size() - 1).getType().isAir(), "Rollback must restore each frame's original item");
         }
         notifications.verify(() -> Notification.error(eq(player), contains("Frame changed during placement")));
-        assertLegacyAliasesRemain();
+        assertArtworkFilesRemain();
     }
 
     @Test
-    void placementWaitsForImageReadAndDurableIndexBeforeChangingFrames() throws Exception {
+    void placementWaitsForBackgroundImageReadBeforeCreatingMapsAndChangingFrames() throws Exception {
         List<Runnable> workers = new ArrayList<>();
         List<Runnable> playerTasks = new ArrayList<>();
         queueScheduler(workers, playerTasks);
@@ -305,56 +316,108 @@ class ImageMapLifecycleTest {
         assertEquals(1, workers.size());
         verify(storage, never()).read(any());
         assertUnchanged();
-        workers.remove(0).run(); // Decode files away from the player thread.
+        workers.remove(0).run(); // Decode all files away from the player thread.
         assertEquals(1, playerTasks.size());
         bukkit.verify(() -> Bukkit.createMap(any(World.class)), never());
-        playerTasks.remove(0).run(); // Create Bukkit maps on the player thread.
-        assertEquals(1, workers.size());
-        assertTrue(storage.find("world", 300).isEmpty());
         assertUnchanged();
-        workers.remove(0).run(); // Commit the map-ID index before exposing any item.
-        assertTrue(storage.find("world", 300).isPresent());
-        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
-        for (ItemFrame frame : frames) {
-            verify(frame, never()).setItem(any(ItemStack.class), anyBoolean());
-        }
-        playerTasks.remove(0).run(); // The final world mutation happens on the owning thread.
+        playerTasks.remove(0).run(); // Create tagged maps and place them on the owning thread.
 
+        assertTrue(workers.isEmpty(), "PDC references need no separate index commit");
         verify(economy).withdrawPlayer(player, 600d);
         for (ItemFrame frame : frames) {
-            verify(frame).setItem(any(ItemStack.class), eq(false));
+            ArgumentCaptor<ItemStack> placed = ArgumentCaptor.forClass(ItemStack.class);
+            verify(frame).setItem(placed.capture(), eq(false));
+            assertTrue(MapItemData.reference(placed.getValue()).isPresent());
         }
         assertTrue(errors.isEmpty(), errors.toString());
+        assertArtworkFilesRemain();
     }
 
     @Test
-    void switchingHeldItemWhileTheIndexIsSavedCannotConsumeTheReplacement() throws Exception {
+    void switchingHeldItemWhileImagesAreReadCannotConsumeTheReplacement() throws Exception {
         List<Runnable> workers = new ArrayList<>();
         List<Runnable> playerTasks = new ArrayList<>();
         queueScheduler(workers, playerTasks);
         ImageMapEvent listener = new ImageMapEvent();
         listener.putImageMapsOnItemFrame(placement());
         workers.remove(0).run();
-        playerTasks.remove(0).run();
-        workers.remove(0).run();
         when(inventory.getItemInMainHand()).thenReturn(new ItemStack(Material.DIAMOND));
 
         playerTasks.remove(0).run();
 
+        bukkit.verify(() -> Bukkit.createMap(any(World.class)), never());
         verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
         verify(inventory, never()).setItemInMainHand(any(ItemStack.class));
         for (ItemFrame frame : frames) {
             verify(frame, never()).setItem(any(ItemStack.class), anyBoolean());
         }
         notifications.verify(() -> Notification.error(eq(player), contains("held map or item frames changed")));
-        assertLegacyAliasesRemain();
+        assertArtworkFilesRemain();
+    }
+
+    @Test
+    void artworkDeletedAfterBackgroundReadCannotConsumeItemChargePlayerOrCreateMaps() throws Exception {
+        List<Runnable> workers = new ArrayList<>();
+        List<Runnable> playerTasks = new ArrayList<>();
+        queueScheduler(workers, playerTasks);
+        PlayerInteractEntityEvent event = placement();
+        new ImageMapEvent().putImageMapsOnItemFrame(event);
+        workers.remove(0).run();
+        assertEquals(1, playerTasks.size());
+        assertTrue(storage.deleteArtwork(LegacyMapFixture.ARTWORK));
+
+        playerTasks.remove(0).run();
+
+        assertTrue(event.isCancelled());
+        bukkit.verify(() -> Bukkit.createMap(any(World.class)), never());
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
+        assertNoFrameChangesOrItemConsumption();
+        notifications.verify(() -> Notification.error(eq(player), contains("Image files are missing or corrupted")));
+    }
+
+    @Test
+    void artworkDeletedDuringFinalProtectionChecksCannotChargePlayerOrPlaceTiles() throws Exception {
+        AtomicInteger probes = new AtomicInteger();
+        doAnswer(call -> {
+            // Six preflight probes run before decoding; the next probe is immediately before payment.
+            if (probes.incrementAndGet() == 7) {
+                storage.deleteArtwork(LegacyMapFixture.ARTWORK);
+            }
+            return null;
+        }).when(pluginManager).callEvent(any(Event.class));
+        PlayerInteractEntityEvent event = placement();
+
+        new ImageMapEvent().putImageMapsOnItemFrame(event);
+
+        assertTrue(event.isCancelled());
+        assertTrue(storage.isDeleted(LegacyMapFixture.ARTWORK));
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
+        assertNoFrameChangesOrItemConsumption();
+        notifications.verify(() -> Notification.error(eq(player), contains("Image files are missing or corrupted")));
+    }
+
+    @Test
+    void artworkDeletedDuringPaymentIsRefundedWithoutConsumingItemOrChangingFrames() throws Exception {
+        doAnswer(call -> {
+            storage.deleteArtwork(LegacyMapFixture.ARTWORK);
+            return null;
+        }).when(economy).withdrawPlayer(player, 600d);
+        PlayerInteractEntityEvent event = placement();
+
+        new ImageMapEvent().putImageMapsOnItemFrame(event);
+
+        assertTrue(event.isCancelled());
+        verify(economy).withdrawPlayer(player, 600d);
+        verify(economy).depositPlayer(player, 600d);
+        assertNoFrameChangesOrItemConsumption();
+        notifications.verify(() -> Notification.error(eq(player), contains("Image files are missing or corrupted")));
     }
 
     @Test
     @SuppressWarnings("deprecation")
-    void legacyWallCanBePickedUpReplacedAndReopenedAfterRestart() throws Exception {
+    void wallCanBePickedUpReplacedAndReopenedAfterRestart() throws Exception {
         for (int i = 0; i < frames.size(); i++) {
-            AtomicReference<ItemStack> contents = new AtomicReference<>(legacyMap(124 + i));
+            AtomicReference<ItemStack> contents = new AtomicReference<>(imageMap(124 + i));
             ItemFrame frame = frames.get(i);
             when(frame.getItem()).thenAnswer(call -> contents.get());
             doAnswer(call -> { contents.set(call.getArgument(0)); return null; })
@@ -381,26 +444,23 @@ class ImageMapLifecycleTest {
 
         assertTrue(errors.isEmpty(), errors.toString());
         MapStorage reopened = new MapStorage(directory);
-        MapMeta recoveredMeta = (MapMeta) recovered.getValue().getItemMeta();
         assertEquals(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK),
-                reopened.find("world", recoveredMeta.getMapView().getId()).orElseThrow());
-        assertEquals(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK),
-                reopened.find("world", 123).orElseThrow());
+                MapItemData.requireReference(recovered.getValue()));
+        assertEquals(0xffff0000, reopened.read(MapItemData.requireReference(recovered.getValue())).getRGB(0, 0));
+        assertEquals(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK), MapItemData.requireReference(held));
         for (int i = 0; i < frames.size(); i++) {
-            MapMeta replacement = (MapMeta) frames.get(i).getItem().getItemMeta();
             MapStorage.ImageReference expected = MapStorage.ImageReference.tile(LegacyMapFixture.ARTWORK, i % 3, i / 3);
-            assertEquals(expected, reopened.find("world", replacement.getMapView().getId()).orElseThrow());
-            assertEquals(expected, reopened.find("world", 124 + i).orElseThrow());
+            assertEquals(expected, MapItemData.requireReference(frames.get(i).getItem()));
             assertEquals(0xffff0000, reopened.read(expected).getRGB(0, 0));
         }
     }
 
     @ParameterizedTest
-    @MethodSource("cn.lunadeer.reColorfulMap.events.ImageMapGeometryTest#legacyWalls")
-    void anyLegacyTileCanRecoverTheWholeArtworkAndKeepOriginalMapIds(BlockFace facing, int[][] positions) throws Exception {
+    @MethodSource("cn.lunadeer.reColorfulMap.events.ImageMapGeometryTest#artworkWalls")
+    void anyTileCanRecoverWholeArtworkAndPreserveFiles(BlockFace facing, int[][] positions) throws Exception {
         frames = wall(facing, positions);
         for (int i = 0; i < frames.size(); i++) {
-            ItemStack tile = legacyMap(124 + i);
+            ItemStack tile = imageMap(124 + i);
             when(frames.get(i).getItem()).thenReturn(tile);
         }
         Item dropped = mock(Item.class);
@@ -415,47 +475,45 @@ class ImageMapLifecycleTest {
         logger.verifyNoInteractions();
         ArgumentCaptor<ItemStack> recovered = ArgumentCaptor.forClass(ItemStack.class);
         verify(world).dropItemNaturally(eq(frames.get(2).getLocation()), recovered.capture());
-        MapMeta meta = (MapMeta) recovered.getValue().getItemMeta();
         assertEquals(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK),
-                storage.find("world", meta.getMapView().getId()).orElseThrow());
+                MapItemData.requireReference(recovered.getValue()));
         for (ItemFrame frame : frames) {
             ArgumentCaptor<ItemStack> cleared = ArgumentCaptor.forClass(ItemStack.class);
             verify(frame).setItem(cleared.capture(), eq(false));
             assertTrue(cleared.getValue().getType().isAir());
         }
-        assertLegacyAliasesRemain();
-        verify(meta, never()).getPersistentDataContainer();
+        assertArtworkFilesRemain();
         verify(world, never()).getPersistentDataContainer();
     }
 
     @ParameterizedTest
-    @MethodSource("cn.lunadeer.reColorfulMap.events.ImageMapGeometryTest#legacyWalls")
-    void clickingLegacyTileCannotClearAnotherArtworkInTheSameWall(BlockFace facing, int[][] positions) throws Exception {
+    @MethodSource("cn.lunadeer.reColorfulMap.events.ImageMapGeometryTest#artworkWalls")
+    void clickingTileCannotClearAnotherArtworkInTheSameWall(BlockFace facing, int[][] positions) throws Exception {
         frames = wall(facing, positions);
         for (int i = 0; i < frames.size(); i++) {
-            ItemStack tile = legacyMap(124 + i);
+            ItemStack tile = imageMap(124 + i);
             when(frames.get(i).getItem()).thenReturn(tile);
         }
         // A different artwork occupies the exact expected coordinates of 1_0.png.
-        ItemStack otherArtwork = legacyMap(999);
+        ItemStack otherArtwork = imageMap(999);
         when(frames.get(1).getItem()).thenReturn(otherArtwork);
         HangingBreakEvent event = new HangingBreakEvent(frames.get(5), HangingBreakEvent.RemoveCause.PHYSICS);
 
         new ImageMapEvent().itemFrameBroken(event);
 
-        assertFalse(event.isCancelled(), "A loose legacy tile must remain removable by vanilla");
+        assertFalse(event.isCancelled(), "A loose image tile must remain removable by vanilla");
         logger.verifyNoInteractions();
         assertUnchanged();
         verify(world, never()).dropItemNaturally(any(Location.class), any(ItemStack.class));
     }
 
     @Test
-    void unloadedNeighboringChunkCannotSplitAnOtherwiseCompleteLegacyWall() throws Exception {
+    void unloadedNeighboringChunkCannotSplitAnOtherwiseCompleteWall() throws Exception {
         frames = wall(BlockFace.NORTH, new int[][]{
                 {16, 65, 20}, {15, 65, 20}, {14, 65, 20},
                 {16, 64, 20}, {15, 64, 20}, {14, 64, 20}});
         for (int i = 0; i < frames.size(); i++) {
-            ItemStack tile = legacyMap(124 + i);
+            ItemStack tile = imageMap(124 + i);
             when(frames.get(i).getItem()).thenReturn(tile);
         }
         // The clicked tile is loaded in chunk 0,1; the artwork's origin lies in unloaded chunk 1,1.
@@ -488,28 +546,25 @@ class ImageMapLifecycleTest {
                 });
     }
 
-    private void assertLegacyAliasesRemain() {
-        assertEquals(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK),
-                storage.find("world", 123).orElseThrow());
+    private void assertArtworkFilesRemain() {
+        Path artwork = directory.resolve("maps/" + LegacyMapFixture.ARTWORK);
+        assertTrue(Files.isRegularFile(artwork.resolve("thumb.png")));
         for (int i = 0; i < 6; i++) {
-            assertEquals(MapStorage.ImageReference.tile(LegacyMapFixture.ARTWORK, i % 3, i / 3),
-                    storage.find("world", 124 + i).orElseThrow());
+            assertTrue(Files.isRegularFile(artwork.resolve((i % 3) + "_" + (i / 3) + ".png")));
         }
+        assertFalse(Files.exists(directory.resolve("maps/maps.yml")));
+        assertFalse(Files.exists(directory.resolve("maps/maps.yaml")));
     }
 
     private MapMeta emptyMapMeta() {
-        MapMeta meta = mock(MapMeta.class, withSettings().extraInterfaces(Damageable.class));
-        AtomicReference<MapView> view = new AtomicReference<>();
-        when(meta.getMapView()).thenAnswer(call -> view.get());
-        doAnswer(call -> { view.set(call.getArgument(0)); return null; }).when(meta).setMapView(any(MapView.class));
-        when(meta.clone()).thenReturn(meta);
-        return meta;
+        return LegacyMapFixture.mapMeta(null);
     }
 
     private void assertUnchanged() throws Exception {
         verify(inventory, never()).setItemInMainHand(any(ItemStack.class));
         verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
-        verify(storage, never()).register(any());
+        verify(storage, never()).deleteArtwork(any());
+        assertFalse(Files.exists(directory.resolve("maps/maps.yml")));
         verify(world, never()).getPersistentDataContainer();
         for (ItemFrame frame : frames) {
             verify(frame, never()).setItem(any(ItemStack.class));
@@ -518,13 +573,26 @@ class ImageMapLifecycleTest {
         }
     }
 
-    private ItemStack legacyMap(int id) {
+    private void assertNoFrameChangesOrItemConsumption() {
+        verify(inventory, never()).setItemInMainHand(any(ItemStack.class));
+        for (ItemFrame frame : frames) {
+            verify(frame, never()).setItem(any(ItemStack.class));
+            verify(frame, never()).setItem(any(ItemStack.class), anyBoolean());
+        }
+    }
+
+    private ItemStack imageMap(int id) {
         MapView view = mock(MapView.class);
         when(view.getWorld()).thenReturn(world);
         when(view.getId()).thenReturn(id);
-        MapMeta meta = mock(MapMeta.class, withSettings().extraInterfaces(Damageable.class));
-        when(meta.getMapView()).thenReturn(view);
-        when(meta.clone()).thenReturn(meta);
+        MapMeta meta = LegacyMapFixture.mapMeta(view);
+        if (id == 123) {
+            MapItemData.setReference(meta, MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK));
+        } else if (id >= 124 && id < 130) {
+            MapItemData.setReference(meta, MapStorage.ImageReference.tile(LegacyMapFixture.ARTWORK, (id - 124) % 3, (id - 124) / 3));
+        } else if (id == 999) {
+            MapItemData.setReference(meta, MapStorage.ImageReference.tile(LegacyMapFixture.OTHER_ARTWORK, 1, 0));
+        }
         ItemStack item = mock(ItemStack.class);
         when(item.getType()).thenReturn(Material.FILLED_MAP);
         when(item.getItemMeta()).thenReturn(meta);

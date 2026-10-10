@@ -2,9 +2,10 @@ package cn.lunadeer.reColorfulMap.storage;
 
 import cn.lunadeer.reColorfulMap.storage.MapStorage.Artwork;
 import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
-import cn.lunadeer.reColorfulMap.storage.MapStorage.MapKey;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -13,8 +14,7 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -26,28 +26,23 @@ class MapStorageTest {
     @TempDir
     Path data;
 
-    @Test
-    void readsLegacyIndexWithoutDecodingOrRemovingMissingImages() throws Exception {
-        UUID id = UUID.randomUUID();
+    @ParameterizedTest
+    @ValueSource(strings = {"maps.yml", "maps.yaml"})
+    void refusesLegacyIndexAndRequestsOfflineMigration(String name) throws Exception {
         Files.createDirectory(data.resolve("maps"));
-        String yaml = "world:\n  '17': maps/" + id + "/thumb.png\n"
-                + "  '18': maps/" + id + "/1_0.png\n"
-                + "world_nether:\n  '17': maps/" + id + "/0_1.png\n";
-        Files.writeString(data.resolve("maps/maps.yml"), yaml);
+        Path index = data.resolve("maps").resolve(name);
+        String yaml = "world:\n  '17': maps/" + UUID.randomUUID() + "/thumb.png\n";
+        Files.writeString(index, yaml);
 
-        MapStorage storage = new MapStorage(data);
+        IOException failure = assertThrows(IOException.class, () -> new MapStorage(data));
 
-        assertEquals(3, storage.size());
-        assertEquals(ImageReference.thumbnail(id), storage.find("world", 17).orElseThrow());
-        assertEquals(ImageReference.tile(id, 1, 0), storage.find("world", 18).orElseThrow());
-        assertEquals(ImageReference.tile(id, 0, 1), storage.find("world_nether", 17).orElseThrow());
-        assertThrows(IOException.class, () -> storage.read(ImageReference.thumbnail(id)));
-        assertEquals(yaml, Files.readString(data.resolve("maps/maps.yml")));
-        assertEquals(3, new MapStorage(data).size());
+        assertTrue(failure.getMessage().contains("Stop the server"));
+        assertTrue(failure.getMessage().contains("migration script"));
+        assertEquals(yaml, Files.readString(index));
     }
 
     @Test
-    void createsLegacyLayoutWithTopLeftTileOriginAndRestoresAllAliases() throws Exception {
+    void createsPngLayoutWithTopLeftTileOriginWithoutAnIndex() throws Exception {
         MapStorage storage = new MapStorage(data);
         BufferedImage centered = new BufferedImage(256, 256, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = centered.createGraphics();
@@ -74,23 +69,16 @@ class MapStorageTest {
         assertEquals(9, raw.getWidth());
         assertEquals(7, raw.getHeight());
         assertEquals(Color.MAGENTA.getRGB(), raw.getRGB(0, 0));
-
-        Map<MapKey, ImageReference> aliases = Map.of(
-                new MapKey("world", 9), ImageReference.thumbnail(id),
-                new MapKey("world", 10), ImageReference.thumbnail(id),
-                new MapKey("world", 11), ImageReference.tile(id, 0, 0),
-                new MapKey("world.with.dots", 9), ImageReference.tile(id, 1, 1));
-        storage.register(aliases);
-        storage.register(aliases);
         MapStorage restarted = new MapStorage(data);
-        assertEquals(4, restarted.size());
-        aliases.forEach((key, reference) -> assertEquals(reference, restarted.find(key.world(), key.id()).orElseThrow()));
         assertEquals(artwork, restarted.artwork(id));
-        assertTrue(Files.readString(data.resolve("maps/maps.yml")).contains("maps/" + id + "/thumb.png"));
+        assertEquals(Color.WHITE.getRGB(), restarted.read(ImageReference.thumbnail(id)).getRGB(0, 0));
+        try (var directories = Files.list(data.resolve("maps"))) {
+            assertEquals(List.of(id.toString()), directories.map(path -> path.getFileName().toString()).toList());
+        }
     }
 
     @Test
-    void infersLegacyMatrixWithoutDependingOnOperationLog() throws Exception {
+    void infersMatrixWithoutDependingOnOperationLog() throws Exception {
         UUID id = UUID.randomUUID();
         Path directory = Files.createDirectories(data.resolve("maps/" + id));
         ImageIO.write(image(128, 128, Color.BLACK), "png", directory.resolve("thumb.png").toFile());
@@ -111,82 +99,60 @@ class MapStorageTest {
     }
 
     @Test
-    void missingOrCorruptPngNeverDeletesAnAlias() throws Exception {
+    void missingOrCorruptPngNeverDeletesArtwork() throws Exception {
         MapStorage storage = new MapStorage(data);
-        Artwork artwork = storage.create(image(128, 128, Color.BLACK), image(128, 128, Color.BLACK), image(128, 128, Color.BLACK));
+        Artwork artwork = create(storage, Color.BLACK);
         ImageReference reference = ImageReference.tile(artwork.id(), 0, 0);
-        storage.register(Map.of(new MapKey("world", 23), reference));
-        String index = Files.readString(data.resolve("maps/maps.yml"));
         Path tile = data.resolve(reference.path());
         Files.writeString(tile, "broken image");
 
         assertThrows(IOException.class, () -> storage.read(reference));
-        assertEquals(reference, new MapStorage(data).find("world", 23).orElseThrow());
+        assertEquals("broken image", Files.readString(tile));
         Files.delete(tile);
         assertThrows(IOException.class, () -> storage.read(reference));
-        assertEquals(reference, new MapStorage(data).find("world", 23).orElseThrow());
-        assertEquals(index, Files.readString(data.resolve("maps/maps.yml")));
+        assertTrue(Files.exists(data.resolve("maps/" + artwork.id() + "/thumb.png")));
+        assertFalse(storage.isDeleted(artwork.id()));
     }
 
     @Test
-    void rejectsOversizedMapImageWithoutAlteringIndex() throws Exception {
+    void rejectsOversizedMapImageWithoutRemovingIt() throws Exception {
         MapStorage storage = new MapStorage(data);
         UUID id = UUID.randomUUID();
         Path directory = Files.createDirectory(data.resolve("maps/" + id));
         ImageIO.write(image(129, 128, Color.BLACK), "png", directory.resolve("thumb.png").toFile());
-        ImageReference reference = ImageReference.thumbnail(id);
-        storage.register(Map.of(new MapKey("world", 1), reference));
 
-        assertThrows(IOException.class, () -> storage.read(reference));
-        assertEquals(reference, storage.find("world", 1).orElseThrow());
+        assertThrows(IOException.class, () -> storage.read(ImageReference.thumbnail(id)));
+        assertTrue(Files.exists(directory.resolve("thumb.png")));
     }
 
     @Test
-    void conflictingBatchPreservesAllExistingDiskAndMemoryMappings() throws Exception {
+    void refusesMapsDirectoryReplacementForEveryDiskOperation() throws Exception {
         MapStorage storage = new MapStorage(data);
-        ImageReference original = ImageReference.thumbnail(UUID.randomUUID());
-        storage.register(Map.of(new MapKey("world", 1), original));
-        String originalIndex = Files.readString(data.resolve("maps/maps.yml"));
-        Map<MapKey, ImageReference> additions = new LinkedHashMap<>();
-        additions.put(new MapKey("world", 2), original);
-        additions.put(new MapKey("world", 1), ImageReference.thumbnail(UUID.randomUUID()));
-
-        assertThrows(IOException.class, () -> storage.register(additions));
-
-        assertTrue(storage.find("world", 2).isEmpty());
-        assertEquals(original, storage.find("world", 1).orElseThrow());
-        assertEquals(originalIndex, Files.readString(data.resolve("maps/maps.yml")));
-        assertEquals(1, new MapStorage(data).size());
-    }
-
-    @Test
-    void failedDiskWriteDoesNotPublishBatchOrReplaceExistingFile() throws Exception {
-        MapStorage storage = new MapStorage(data);
-        ImageReference reference = ImageReference.thumbnail(UUID.randomUUID());
-        storage.register(Map.of(new MapKey("world", 1), reference));
-        String originalIndex = Files.readString(data.resolve("maps/maps.yml"));
+        Artwork artwork = create(storage, Color.BLACK);
         Path preserved = data.resolve("preserved-maps");
         Files.move(data.resolve("maps"), preserved);
         Path outside = Files.createDirectory(data.resolve("outside"));
         Files.createSymbolicLink(data.resolve("maps"), outside);
 
-        assertThrows(IOException.class, () -> storage.register(Map.of(new MapKey("world", 2), reference)));
-
-        assertEquals(1, storage.size());
-        assertTrue(storage.find("world", 2).isEmpty());
-        assertEquals(originalIndex, Files.readString(preserved.resolve("maps.yml")));
-        assertFalse(Files.exists(outside.resolve("maps.yml")));
+        assertThrows(IOException.class, () -> create(storage, Color.RED));
+        assertThrows(IOException.class, () -> storage.read(ImageReference.thumbnail(artwork.id())));
+        assertThrows(IOException.class, () -> storage.artwork(artwork.id()));
+        assertThrows(IOException.class, () -> storage.deleteArtwork(artwork.id()));
+        assertThrows(IOException.class, storage::cleanTemporaryFiles);
+        assertTrue(Files.exists(preserved.resolve(artwork.id() + "/thumb.png")));
+        try (var files = Files.list(outside)) {
+            assertEquals(0, files.count());
+        }
     }
 
     @Test
-    void cleanupOnlyRemovesOwnedTemporaryFilesAndNeverArtworkOrAliases() throws Exception {
+    void cleanupOnlyRemovesOwnedTemporaryFilesAndNeverPublishedArtwork() throws Exception {
         MapStorage storage = new MapStorage(data);
-        Artwork artwork = storage.create(image(128, 128, Color.RED), image(128, 128, Color.RED), image(128, 128, Color.RED));
-        ImageReference reference = ImageReference.thumbnail(artwork.id());
-        storage.register(Map.of(new MapKey("world", 4), reference));
+        Artwork artwork = create(storage, Color.RED);
         Path abandoned = Files.createDirectory(data.resolve("maps/.recolorfulmap-artwork-" + UUID.randomUUID() + ".tmp"));
         Files.writeString(abandoned.resolve("partial.png"), "partial write");
-        Files.writeString(data.resolve("maps/.recolorfulmap-index-" + UUID.randomUUID() + ".tmp"), "partial index");
+        Path deleting = Files.createDirectory(data.resolve("maps/.recolorfulmap-delete-" + UUID.randomUUID() + ".tmp"));
+        Files.writeString(deleting.resolve("0_0.png"), "pending removal");
         Path unrelated = data.resolve("maps/.recolorfulmap-user-backup.tmp");
         Files.writeString(unrelated, "keep me");
         Path outside = Files.createDirectory(data.resolve("outside"));
@@ -199,19 +165,36 @@ class MapStorageTest {
         assertTrue(Files.exists(outside.resolve("keep.txt")));
         assertTrue(Files.exists(data.resolve("maps/" + artwork.id() + "/raw.png")));
         assertEquals(artwork, storage.artwork(artwork.id()));
-        assertEquals(reference, new MapStorage(data).find("world", 4).orElseThrow());
-        assertEquals(Color.RED.getRGB(), storage.read(reference).getRGB(0, 0));
+        assertEquals(Color.RED.getRGB(), storage.read(ImageReference.thumbnail(artwork.id())).getRGB(0, 0));
         assertEquals(0, storage.cleanTemporaryFiles());
     }
 
     @Test
-    void rejectsTraversalInLegacyIndexWithoutRewritingIt() throws Exception {
-        Files.createDirectory(data.resolve("maps"));
-        String index = "world:\n  '1': maps/../../outside.png\n";
-        Files.writeString(data.resolve("maps/maps.yml"), index);
+    void referencesRoundTripWithCanonicalPaths() {
+        UUID id = UUID.fromString("b44b66b1-1260-43a6-91bb-aeb1f3dca74d");
+        for (ImageReference reference : List.of(ImageReference.thumbnail(id), ImageReference.tile(id, 0, 0),
+                ImageReference.tile(id, 5, 21), ImageReference.tile(id, Integer.MAX_VALUE, Integer.MAX_VALUE))) {
+            assertEquals(reference, ImageReference.parse(reference.path()).orElseThrow());
+        }
+        assertTrue(ImageReference.parse(null).isEmpty());
+    }
 
-        assertThrows(IOException.class, () -> new MapStorage(data));
-        assertEquals(index, Files.readString(data.resolve("maps/maps.yml")));
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "", "/maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/thumb.png",
+            "maps/../thumb.png", "maps/../../outside.png", "maps/1-1-1-1-1/thumb.png",
+            "maps/B44B66B1-1260-43A6-91BB-AEB1F3DCA74D/thumb.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/../thumb.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/raw.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/00_0.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/-1_0.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/2147483648_0.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/thumb.png\n",
+            "maps\\b44b66b1-1260-43a6-91bb-aeb1f3dca74d\\thumb.png",
+            "maps/b44b66b1-1260-43a6-91bb-aeb1f3dca74d/%2e%2e/thumb.png"
+    })
+    void rejectsUnsafeOrNoncanonicalReferencePaths(String path) {
+        assertTrue(ImageReference.parse(path).isEmpty());
     }
 
     @Test
@@ -223,10 +206,66 @@ class MapStorageTest {
         Path artworkDirectory = data.resolve("maps/" + id);
         Files.createSymbolicLink(artworkDirectory, outside);
         assertThrows(IOException.class, () -> storage.read(ImageReference.thumbnail(id)));
+        assertThrows(IOException.class, () -> storage.artwork(id));
+        assertThrows(IOException.class, () -> storage.deleteArtwork(id));
         Files.delete(artworkDirectory);
         Files.createDirectory(artworkDirectory);
         Files.createSymbolicLink(artworkDirectory.resolve("thumb.png"), outside.resolve("thumb.png"));
         assertThrows(IOException.class, () -> storage.read(ImageReference.thumbnail(id)));
+        assertTrue(Files.exists(outside.resolve("thumb.png")));
+        assertFalse(storage.isDeleted(id));
+    }
+
+    @Test
+    void deletesOnlySelectedArtworkWithoutFollowingNestedSymlinks() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork removed = create(storage, Color.RED);
+        Artwork kept = create(storage, Color.BLUE);
+        Path outside = Files.createDirectory(data.resolve("outside"));
+        Files.writeString(outside.resolve("keep.txt"), "keep me");
+        Files.createSymbolicLink(data.resolve("maps/" + removed.id() + "/nested-link"), outside);
+        assertFalse(storage.isDeleted(removed.id()));
+
+        assertTrue(storage.deleteArtwork(removed.id()));
+
+        assertTrue(storage.isDeleted(removed.id()));
+        assertFalse(storage.isDeleted(kept.id()));
+        assertFalse(storage.deleteArtwork(removed.id()));
+        assertThrows(IOException.class, () -> storage.read(ImageReference.thumbnail(removed.id())));
+        assertThrows(IOException.class, () -> storage.artwork(removed.id()));
+        assertEquals(kept, storage.artwork(kept.id()));
+        assertEquals(Color.BLUE.getRGB(), storage.read(ImageReference.thumbnail(kept.id())).getRGB(0, 0));
+        assertEquals("keep me", Files.readString(outside.resolve("keep.txt")));
+        assertEquals(0, storage.cleanTemporaryFiles());
+        try (var files = Files.list(data.resolve("maps"))) {
+            assertEquals(List.of(kept.id().toString()), files.map(path -> path.getFileName().toString()).toList());
+        }
+    }
+
+    @Test
+    void deletingMissingArtworkIsAnUnmarkedNoOp() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        UUID id = UUID.randomUUID();
+
+        assertFalse(storage.deleteArtwork(id));
+        assertFalse(storage.isDeleted(id));
+    }
+
+    @Test
+    void concurrentDeletionUnpublishesArtworkOnlyOnce() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork artwork = create(storage, Color.RED);
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var first = workers.submit(() -> storage.deleteArtwork(artwork.id()));
+            var second = workers.submit(() -> storage.deleteArtwork(artwork.id()));
+            assertNotEquals(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+            assertTrue(storage.isDeleted(artwork.id()));
+            assertEquals(0, storage.cleanTemporaryFiles());
+        } finally {
+            workers.shutdownNow();
+            assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -240,10 +279,27 @@ class MapStorageTest {
     }
 
     @Test
-    void slowImageEncodingDoesNotBlockIndexAccessOrExposeActiveStagingToCleanup() throws Exception {
+    void failureAfterWritingThumbnailNeverPublishesPartialArtwork() throws Exception {
         MapStorage storage = new MapStorage(data);
-        ImageReference reference = ImageReference.thumbnail(UUID.randomUUID());
-        storage.register(Map.of(new MapKey("world", 1), reference));
+        BufferedImage brokenTiles = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB) {
+            @Override
+            public BufferedImage getSubimage(int x, int y, int width, int height) {
+                throw new IllegalStateException("Failed to extract tile");
+            }
+        };
+
+        assertThrows(IllegalStateException.class, () -> storage.create(image(128, 128, Color.RED),
+                brokenTiles, image(128, 128, Color.RED)));
+
+        try (var files = Files.list(data.resolve("maps"))) {
+            assertEquals(0, files.count());
+        }
+    }
+
+    @Test
+    void slowEncodingAllowsReadsAndKeepsActiveStagingSafeFromCleanup() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork existing = create(storage, Color.RED);
         CountDownLatch encodingStarted = new CountDownLatch(1);
         CountDownLatch resumeEncoding = new CountDownLatch(1);
         BufferedImage slowOriginal = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB) {
@@ -271,24 +327,20 @@ class MapStorageTest {
                 staging = files.filter(file -> file.getFileName().toString().startsWith(".recolorfulmap-artwork-"))
                         .findFirst().orElseThrow();
             }
-
             var access = workers.submit(() -> {
-                assertEquals(reference, storage.find("world", 1).orElseThrow());
-                assertEquals(1, storage.size());
+                assertEquals(existing, storage.artwork(existing.id()));
+                assertEquals(Color.RED.getRGB(), storage.read(ImageReference.thumbnail(existing.id())).getRGB(0, 0));
                 assertEquals(0, storage.cleanTemporaryFiles());
                 assertTrue(Files.isDirectory(staging), "Cleanup must leave the active image directory intact");
-                storage.register(Map.of(new MapKey("world", 2), reference));
-                assertEquals(reference, storage.find("world", 2).orElseThrow());
                 return null;
             });
             access.get(3, TimeUnit.SECONDS);
-            assertFalse(creation.isDone(), "Index operations should finish while PNG encoding remains blocked");
+            assertFalse(creation.isDone(), "Reads and cleanup should finish while PNG encoding remains blocked");
             resumeEncoding.countDown();
             Artwork artwork = creation.get(5, TimeUnit.SECONDS);
             assertFalse(Files.exists(staging));
             assertEquals(artwork, storage.artwork(artwork.id()));
             assertEquals(Color.BLUE.getRGB(), storage.read(ImageReference.tile(artwork.id(), 0, 0)).getRGB(0, 0));
-            assertEquals(2, new MapStorage(data).size());
         } finally {
             resumeEncoding.countDown();
             workers.shutdownNow();
@@ -296,24 +348,9 @@ class MapStorageTest {
         }
     }
 
-    @Test
-    void indexReadersDoNotWaitForTheRegistrationMonitor() throws Exception {
-        MapStorage storage = new MapStorage(data);
-        ImageReference reference = ImageReference.thumbnail(UUID.randomUUID());
-        storage.register(Map.of(new MapKey("world", 5), reference));
-        var reader = Executors.newSingleThreadExecutor();
-        try {
-            synchronized (storage) {
-                var lookup = reader.submit(() -> {
-                    assertEquals(reference, storage.find("world", 5).orElseThrow());
-                    assertEquals(1, storage.size());
-                });
-                lookup.get(3, TimeUnit.SECONDS);
-            }
-        } finally {
-            reader.shutdownNow();
-            assertTrue(reader.awaitTermination(5, TimeUnit.SECONDS));
-        }
+    private static Artwork create(MapStorage storage, Color color) throws IOException {
+        BufferedImage image = image(128, 128, color);
+        return storage.create(image, image, image);
     }
 
     private static BufferedImage image(int width, int height, Color color) {

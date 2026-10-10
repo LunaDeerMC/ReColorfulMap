@@ -3,11 +3,8 @@ package cn.lunadeer.reColorfulMap;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.storage.MapStorage.Artwork;
 import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
-import cn.lunadeer.reColorfulMap.storage.MapStorage.MapKey;
 import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationPart;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.event.HoverEvent;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -18,13 +15,10 @@ import org.bukkit.map.MapView;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-/** A portable reference to an artwork. All image bytes live in the maps directory. */
+/** An artwork item carries a small file path, never PNG bytes or a global index key. */
 public class ImageMapItem extends ItemStack {
     public static class ImageMapItemText extends ConfigurationPart {
         public String imageCorrupt = "Image files are missing or corrupted; check the server log.";
@@ -35,17 +29,15 @@ public class ImageMapItem extends ItemStack {
         public String removedImageTiles = "Removed %d temporary files. Saved artworks were kept.";
     }
 
-    private static final Pattern LEGACY_SIZE = Pattern.compile("size: ([1-9][0-9]*)x([1-9][0-9]*)");
     private final Artwork artwork;
     private final World world;
 
     /** Called on the server/entity thread after the artwork files have been committed. */
     public ImageMapItem(World world, Artwork artwork) throws IOException {
         this(world, artwork, ReColorfulMap.getInstance().getMapStorage().read(ImageReference.thumbnail(artwork.id())));
-        ReColorfulMap.getInstance().getMapStorage().register(references());
     }
 
-    /** Prepares the item on the owning thread. Persist references() before giving it to a player. */
+    /** All PNG writes finish before an item referencing them is created. */
     public ImageMapItem(World world, Artwork artwork, BufferedImage thumbnail) throws IOException {
         super(Material.FILLED_MAP);
         if (world == null) {
@@ -58,9 +50,8 @@ public class ImageMapItem extends ItemStack {
         MapView view = Bukkit.createMap(world);
         MapMeta meta = (MapMeta) getItemMeta();
         meta.setMapView(view);
-        // Keep ColorfulMap 2.3's small, portable item format; no image data in PDC.
-        meta.lore(List.of(Component.text("size: " + artwork.columns() + "x" + artwork.rows())
-                .hoverEvent(Component.text(artwork.id().toString()))));
+        MapItemData.setReference(meta, reference);
+        meta.lore(List.of(Component.text("size: " + artwork.columns() + "x" + artwork.rows())));
         for (var renderer : view.getRenderers()) {
             view.removeRenderer(renderer);
         }
@@ -68,87 +59,28 @@ public class ImageMapItem extends ItemStack {
         setItemMeta(meta);
     }
 
-    /** Reconstruct a new or ColorfulMap 2.3 thumbnail without reading all of its pixels. */
     public ImageMapItem(ItemStack mapItem) throws IOException {
         super(mapItem);
-        MapStorage storage = ReColorfulMap.getInstance().getMapStorage();
-        UUID id = identify(mapItem, storage)
-                .orElseThrow(() -> new IOException("Not an image map thumbnail"));
-        this.artwork = storage.artwork(id);
-        MapMeta meta = (MapMeta) mapItem.getItemMeta();
-        MapView view = meta.getMapView();
+        ImageReference reference = MapItemData.requireReference(mapItem);
+        if (!reference.thumbnail()) {
+            throw new IOException("This map is an image tile, not a whole artwork");
+        }
+        this.artwork = ReColorfulMap.getInstance().getMapStorage().artwork(reference.artwork());
+        MapView view = ((MapMeta) mapItem.getItemMeta()).getMapView();
         this.world = view == null ? null : view.getWorld();
     }
 
     public static boolean isImageMap(ItemStack item) {
-        return identify(item, ReColorfulMap.getInstance().getMapStorage()).isPresent();
+        // Claim damaged tagged items too, so a failed placement cannot silently consume them.
+        return MapItemData.hasImage(item) && MapItemData.reference(item).map(ImageReference::thumbnail).orElse(true);
     }
 
-    /** Indexed thumbnails also work after renaming/removing lore. Indexed tiles are never thumbnails. */
-    public static Optional<UUID> identify(ItemStack item, MapStorage storage) {
-        if (item == null || item.getType() != Material.FILLED_MAP || !(item.getItemMeta() instanceof MapMeta meta)) {
-            return Optional.empty();
-        }
-        MapView view = meta.getMapView();
-        if (view != null && view.getWorld() != null) {
-            Optional<ImageReference> reference = storage.find(view.getWorld().getName(), view.getId());
-            if (reference.isPresent()) {
-                return reference.get().thumbnail() ? Optional.of(reference.get().artwork()) : Optional.empty();
-            }
-        }
-        return legacyArtwork(meta.lore());
-    }
-
-    /** ColorfulMap 2.3 stored its UUID in the SHOW_TEXT hover event of its single lore line. */
-    public static Optional<UUID> legacyArtwork(List<Component> lore) {
-        if (lore == null || lore.size() != 1) {
-            return Optional.empty();
-        }
-        Matcher matcher = LEGACY_SIZE.matcher(PlainTextComponentSerializer.plainText().serialize(lore.get(0)));
-        if (!matcher.matches()) {
-            return Optional.empty();
-        }
-        try {
-            Integer.parseInt(matcher.group(1));
-            Integer.parseInt(matcher.group(2));
-            return artworkHover(lore.get(0));
-        } catch (IllegalArgumentException e) {
-            return Optional.empty();
-        }
-    }
-
-    private static Optional<UUID> artworkHover(Component component) {
-        HoverEvent<?> hover = component.hoverEvent();
-        if (hover != null && hover.action() == HoverEvent.Action.SHOW_TEXT && hover.value() instanceof Component value) {
-            String text = PlainTextComponentSerializer.plainText().serialize(value);
-            try {
-                UUID id = UUID.fromString(text);
-                if (id.toString().equalsIgnoreCase(text)) {
-                    return Optional.of(id);
-                }
-            } catch (IllegalArgumentException ignored) {
-                // A component wrapper may carry unrelated hover text; also inspect its children.
-            }
-        }
-        for (Component child : component.children()) {
-            Optional<UUID> id = artworkHover(child);
-            if (id.isPresent()) {
-                return id;
-            }
-        }
-        return Optional.empty();
+    public static Optional<UUID> identify(ItemStack item) {
+        return MapItemData.reference(item).filter(ImageReference::thumbnail).map(ImageReference::artwork);
     }
 
     public Artwork getArtwork() {
         return artwork;
-    }
-
-    public Map<MapKey, ImageReference> references() {
-        MapView view = ((MapMeta) getItemMeta()).getMapView();
-        if (view == null || view.getWorld() == null) {
-            throw new IllegalStateException("The thumbnail has no world/map ID");
-        }
-        return Map.of(new MapKey(view.getWorld().getName(), view.getId()), ImageReference.thumbnail(artwork.id()));
     }
 
     public UUID getArtworkId() {

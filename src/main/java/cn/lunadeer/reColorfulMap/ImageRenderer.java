@@ -33,6 +33,7 @@ public class ImageRenderer extends MapRenderer {
     private final MapStorage storage;
     private final ImageReference reference;
     private final Set<MapCanvas> rendered = Collections.newSetFromMap(new WeakHashMap<>());
+    private final Set<MapCanvas> cleared = Collections.newSetFromMap(new WeakHashMap<>());
 
     public ImageRenderer(BufferedImage image) {
         this.directImage = Objects.requireNonNull(image);
@@ -53,8 +54,23 @@ public class ImageRenderer extends MapRenderer {
         IMAGES.put(storage, reference, image);
     }
 
+    public boolean matches(MapStorage store, ImageReference image) {
+        return storage == store && Objects.equals(reference, image);
+    }
+
     @Override
     public synchronized void render(@NotNull MapView map, @NotNull MapCanvas canvas, @NotNull Player player) {
+        if (storage != null && storage.isDeleted(reference.artwork())) {
+            IMAGES.invalidate(storage, reference.artwork());
+            if (cleared.add(canvas)) {
+                for (int y = 0; y < 128; y++) {
+                    for (int x = 0; x < 128; x++) {
+                        canvas.setPixel(x, y, (byte) 0);
+                    }
+                }
+            }
+            return;
+        }
         if (rendered.contains(canvas)) {
             return;
         }

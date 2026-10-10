@@ -2,6 +2,7 @@ package cn.lunadeer.reColorfulMap.events;
 
 import cn.lunadeer.reColorfulMap.Configuration;
 import cn.lunadeer.reColorfulMap.ImageMapItem;
+import cn.lunadeer.reColorfulMap.MapItemData;
 import cn.lunadeer.reColorfulMap.ImageRenderer;
 import cn.lunadeer.reColorfulMap.Language;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
@@ -18,6 +19,7 @@ import org.bukkit.Rotation;
 import org.bukkit.World;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Hanging;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
@@ -34,14 +36,13 @@ import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
 
 import java.awt.image.BufferedImage;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.lang.reflect.Method;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Item frames carry ordinary map items; their identity comes from maps/maps.yml. */
+/** Item frames carry small image paths in their map items' PDC. */
 public class ImageMapEvent implements Listener {
 
     public static class ImageMapEventText extends ConfigurationPart {
@@ -65,11 +66,8 @@ public class ImageMapEvent implements Listener {
     private final Set<UUID> pendingPlacements = ConcurrentHashMap.newKeySet();
 
     private record Placement(UUID playerId, Player player, ItemFrame originFrame, Location origin,
-                             BlockFace facing, World world, String worldName, ItemStack held,
+                             BlockFace facing, World world, ItemStack held,
                              MapStorage store, MapStorage.Artwork artwork) { }
-
-    private record PreparedTiles(ItemStack[][] items,
-                                 Map<MapStorage.MapKey, MapStorage.ImageReference> references) { }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void putImageMapsOnItemFrame(PlayerInteractEntityEvent event) {
@@ -96,7 +94,7 @@ public class ImageMapEvent implements Listener {
             placementCost(player, imageMap.getArtwork());
             World world = clicked.getWorld();
             Placement placement = new Placement(playerId, player, clicked, clicked.getLocation().clone(),
-                    clicked.getFacing(), world, world.getName(), held, storage(), imageMap.getArtwork());
+                    clicked.getFacing(), world, held, storage(), imageMap.getArtwork());
             Scheduler.runTaskAsync(() -> preparePlacement(placement));
         } catch (Exception failure) {
             pendingPlacements.remove(playerId);
@@ -118,15 +116,8 @@ public class ImageMapEvent implements Listener {
     private void createPlacement(Placement placement, BufferedImage[][] images) {
         try {
             placementFrames(placement);
-            PreparedTiles tiles = createTiles(placement, images);
-            Scheduler.runTaskAsync(() -> {
-                try {
-                    placement.store().register(tiles.references());
-                    onPlayerThread(placement, () -> finishPlacement(placement, tiles.items()));
-                } catch (Exception failure) {
-                    failOnPlayerThread(placement, failure);
-                }
-            });
+            ItemStack[][] tiles = createTiles(placement, images);
+            finishPlacement(placement, tiles);
         } catch (Exception failure) {
             finishFailure(placement, failure);
         }
@@ -148,6 +139,11 @@ public class ImageMapEvent implements Listener {
     }
 
     private static ItemFrame[][] placementFrames(Placement placement) throws Exception {
+        // Another copy may be destroyed after decoding or during a protection/economy callback.
+        // Recheck at every commit boundary so cached pixels cannot place a deleted artwork.
+        if (placement.store().isDeleted(placement.artwork().id())) {
+            throw new IllegalStateException(Language.imageMapItem.imageCorrupt);
+        }
         // Check the captured location before accessing the entity: the player may have changed regions.
         requireOwned(placement.origin());
         ItemFrame origin = placement.originFrame();
@@ -281,11 +277,10 @@ public class ImageMapEvent implements Listener {
         return images;
     }
 
-    /** Builds ordinary map items on the server thread, without writing the index. */
-    private static PreparedTiles createTiles(Placement placement, BufferedImage[][] images) throws Exception {
+    /** Builds map items on the server thread; paths are saved with the items themselves. */
+    private static ItemStack[][] createTiles(Placement placement, BufferedImage[][] images) throws Exception {
         MapStorage.Artwork artwork = placement.artwork();
         ItemStack[][] tiles = new ItemStack[artwork.columns()][artwork.rows()];
-        Map<MapStorage.MapKey, MapStorage.ImageReference> references = new LinkedHashMap<>();
         for (int x = 0; x < artwork.columns(); x++) {
             for (int y = 0; y < artwork.rows(); y++) {
                 ItemStack tile = new ItemStack(Material.FILLED_MAP);
@@ -293,13 +288,13 @@ public class ImageMapEvent implements Listener {
                 MapView view = Bukkit.createMap(placement.world());
                 meta.setMapView(view);
                 MapStorage.ImageReference reference = MapStorage.ImageReference.tile(artwork.id(), x, y);
+                MapItemData.setReference(meta, reference);
                 ImageRenderer.renderOnMeta(meta, images[x][y], placement.store(), reference);
                 tile.setItemMeta(meta);
                 tiles[x][y] = tile;
-                references.put(new MapStorage.MapKey(placement.worldName(), view.getId()), reference);
             }
         }
-        return new PreparedTiles(tiles, references);
+        return tiles;
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -361,7 +356,7 @@ public class ImageMapEvent implements Listener {
                         throw new IllegalStateException(Language.imageMapEvent.protectedItemFrame);
                     }
                     HangingBreakEvent probe = original instanceof HangingBreakByEntityEvent byEntity
-                            ? new HangingBreakByEntityEvent(frame, byEntity.getRemover(), original.getCause())
+                            ? createHangingBreakProbe(HangingBreakByEntityEvent.class, byEntity, frame)
                             : new HangingBreakEvent(frame, original.getCause());
                     Bukkit.getPluginManager().callEvent(probe);
                     if (probe.isCancelled()) {
@@ -371,6 +366,27 @@ public class ImageMapEvent implements Listener {
             }
         } finally {
             protectionProbe.remove();
+        }
+    }
+
+    /** Paper 26.2 requires a DamageSource; older versions expose only the three-argument constructor. */
+    static <T extends HangingBreakByEntityEvent> T createHangingBreakProbe(
+            Class<T> eventType, HangingBreakByEntityEvent original, Hanging target) {
+        try {
+            Method damageSource;
+            try {
+                damageSource = eventType.getMethod("getDamageSource");
+            } catch (NoSuchMethodException legacyApi) {
+                return eventType.getConstructor(Hanging.class, Entity.class, HangingBreakEvent.RemoveCause.class)
+                        .newInstance(target, original.getRemover(), original.getCause());
+            }
+            // Preserve the actual source for protection plugins instead of fabricating generic damage.
+            return eventType.getConstructor(Hanging.class, Entity.class, damageSource.getReturnType(),
+                            HangingBreakEvent.RemoveCause.class)
+                    .newInstance(target, original.getRemover(), damageSource.invoke(original), original.getCause());
+        } catch (ReflectiveOperationException failure) {
+            // An unsupported event shape must leave the painting in place, never skip protection checks.
+            throw new IllegalStateException("Cannot create an item frame protection event on this server", failure);
         }
     }
 
@@ -423,7 +439,7 @@ public class ImageMapEvent implements Listener {
     private static void recover(ItemFrame clicked, MapStorage.ImageReference reference, ItemFrame[][] frames) throws Exception {
         MapStorage.Artwork artwork = storage().artwork(reference.artwork());
         requireMatching(frames, artwork);
-        // Saving the new thumbnail reference can fail; do it before touching a single frame.
+        // Validate the thumbnail before touching a single frame; files survive normal pickup.
         ImageMapItem recovered = new ImageMapItem(clicked.getWorld(), artwork);
         FrameSnapshot[][] before = snapshot(frames);
         Item dropped = null;
@@ -451,15 +467,7 @@ public class ImageMapEvent implements Listener {
     }
 
     private static Optional<MapStorage.ImageReference> tileReference(ItemStack item) {
-        if (item.getType() != Material.FILLED_MAP || !(item.getItemMeta() instanceof MapMeta meta)) {
-            return Optional.empty();
-        }
-        MapView view = meta.getMapView();
-        if (view == null || view.getWorld() == null) {
-            return Optional.empty();
-        }
-        // Map IDs follow the MapView's world, even if the item was carried into another world.
-        return storage().find(view.getWorld().getName(), view.getId()).filter(reference -> !reference.thumbnail());
+        return MapItemData.reference(item).filter(reference -> !reference.thumbnail());
     }
 
     public static boolean isExpectedTile(MapStorage.ImageReference reference, MapStorage.Artwork artwork, int x, int y) {

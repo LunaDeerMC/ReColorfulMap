@@ -20,8 +20,8 @@
 ReColorfulMap is a plugin that converts images into image maps, which can be hung on item frames to add decoration.
 
 This is a remake of the original ColorfulMap plugin. Images are stored as PNG files in
-`plugins/ReColorfulMap/maps`, using the same layout as ColorfulMap 2.3. The plugin loads the map ID index at startup
-and reads images when needed. Image data is never stored in world or item PDC.
+`plugins/ReColorfulMap/maps`, using the same layout as ColorfulMap 2.3. Each map item stores only its relative PNG path in PDC.
+Images load on demand, and there is no map ID index file.
 
 Both ColorfulMap and ReColorfulMap's idea are from [ImageFrame](https://github.com/LOOHP/ImageFrame)
 and [ImageMaps](https://github.com/SydMontague/ImageMaps).
@@ -84,23 +84,30 @@ work.
 | Reload      | `/reloadColorfulMap`            | recolorfulmap.admin | op      |
 | Clean Temporary Files | `/cleanColorfulMap`    | recolorfulmap.admin | op      |
 
-`/cleanColorfulMap` only removes temporary files left by failed plugin writes. It preserves artwork PNGs and map ID
-records, including maps in inventories, chests, and unloaded chunks.
+`/cleanColorfulMap` removes temporary directories left by failed writes or deletions.
+Artwork files are deleted when a dropped map item is actually destroyed; placement, retrieval, pickups, and chunk unloads preserve them.
 
 ### Upgrading from ColorfulMap 2.3
 
-1. Stop the server and back up the worlds and `plugins/ColorfulMap/maps`.
-2. Remove the ColorfulMap 2.3 plugin JAR and install ReColorfulMap.
-3. Copy the **entire** `plugins/ColorfulMap/maps` directory to `plugins/ReColorfulMap/maps`, including `maps.yml`
-   and every UUID directory. Use the actual plugin data directory; its default is `plugins/ReColorfulMap`.
-4. Keep the existing world saves and their map ID data, then start the server. No conversion command is needed.
+1. Stop the server and back up worlds, player data, and `plugins/ColorfulMap`.
+2. Copy this repository's entire `scripts` directory into your server directory and run:
 
-Existing placed maps and unplaced artwork items are supported. Existing complete wall arrays can also be retrieved
-as a whole artwork. Placement and retrieval preserve the image files and previous map ID records so copied items
-remain usable. Back up the `maps` directory together with world and player data.
+   ```bash
+   bash scripts/migrate-colorfulmap.sh --server-root . --apply
+   ```
 
-The repository's previous PDC image storage is discontinued and has no migration support.
-See [storage format and upgrade notes (Chinese)](docs/storage.md) for details.
+3. Replace the old plugin JAR with ReColorfulMap and start the server. Paper 26.2 requires Java 25.
+
+The script copies PNG files to `plugins/ReColorfulMap/maps` and adds path PDC to existing items.
+**Copying the maps directory alone is no longer sufficient.** Omit `--apply` for a dry run.
+Existing complete arrays can still be retrieved from any tile and placed again without deleting their images.
+Copied items share the artwork directory; destruction of one copy invalidates the others.
+
+The script requires Linux/macOS or WSL and Python 3.10+. Observe the case of `ReColorfulMap` in the default path.
+See [storage and migration documentation (Chinese)](docs/storage.md) for backups, rollback, in-place migration,
+and the exact destruction events covered. Creative inventory deletion, `/clear`, and arbitrary plugin inventory
+changes do not have a universal destruction event and do not trigger automatic file deletion.
+The repository's previous PDC image-byte storage is discontinued and has no migration support.
 
 ### Configuration Reference
 

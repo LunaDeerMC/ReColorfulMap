@@ -73,11 +73,10 @@ class ImageRendererTest {
     }
 
     @Test
-    void unavailableFileDoesNotDeleteItsLegacyReferenceOrTouchCanvas() throws Exception {
+    void unavailableFileDoesNotDeleteOtherArtworkFilesOrTouchCanvas() throws Exception {
         MapStorage storage = spy(LegacyMapFixture.copyTo(directory));
         MapStorage.ImageReference reference = MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK);
         Files.delete(directory.resolve(reference.path()));
-        String indexBefore = Files.readString(directory.resolve("maps/maps.yml"));
         MapView view = mock(MapView.class);
         MapCanvas canvas = mock(MapCanvas.class);
         Player player = mock(Player.class);
@@ -93,10 +92,38 @@ class ImageRendererTest {
             backgroundTasks.get(0).run();
             renderer.render(view, canvas, player);
 
-            assertTrue(storage.find("world", 123).isPresent());
-            assertEquals(indexBefore, Files.readString(directory.resolve("maps/maps.yml")));
-            verify(storage, never()).register(any());
+            assertTrue(Files.isRegularFile(directory.resolve("maps/" + LegacyMapFixture.ARTWORK + "/0_0.png")));
+            org.junit.jupiter.api.Assertions.assertFalse(storage.isDeleted(LegacyMapFixture.ARTWORK));
+            verify(storage, never()).deleteArtwork(any());
             verify(canvas, never()).drawImage(anyInt(), anyInt(), any(Image.class));
         }
     }
+    @Test
+    @SuppressWarnings("deprecation")
+    void deletingArtworkClearsEveryPreviouslyDrawnCanvasOnceAndDoesNotRedraw() throws Exception {
+        MapStorage storage = LegacyMapFixture.copyTo(directory);
+        MapStorage.ImageReference reference = MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK);
+        BufferedImage pixels = storage.read(reference);
+        ImageRenderer renderer = new ImageRenderer(storage, reference, pixels);
+        MapView view = mock(MapView.class);
+        Player player = mock(Player.class);
+        MapCanvas canvas = mock(MapCanvas.class);
+        renderer.render(view, canvas, player);
+        verify(canvas).drawImage(0, 0, pixels);
+
+        assertTrue(storage.deleteArtwork(reference.artwork()));
+        renderer.render(view, canvas, player);
+        renderer.render(view, canvas, player);
+
+        verify(canvas, times(128 * 128)).setPixel(anyInt(), anyInt(), eq((byte) 0));
+        verify(canvas).setPixel(0, 0, (byte) 0);
+        verify(canvas).setPixel(127, 127, (byte) 0);
+        verify(canvas, times(1)).drawImage(anyInt(), anyInt(), any(Image.class));
+        MapCanvas anotherCanvas = mock(MapCanvas.class);
+        renderer.render(view, anotherCanvas, player);
+        renderer.render(view, anotherCanvas, player);
+        verify(anotherCanvas, times(128 * 128)).setPixel(anyInt(), anyInt(), eq((byte) 0));
+        verify(anotherCanvas, never()).drawImage(anyInt(), anyInt(), any(Image.class));
+    }
+
 }

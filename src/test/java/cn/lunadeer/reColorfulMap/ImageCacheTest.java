@@ -16,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -73,6 +75,55 @@ class ImageCacheTest {
         assertTrue(workers.isEmpty());
         assertEquals(List.of(reference), failures);
         verify(storage).read(reference);
-        assertTrue(storage.find("world", 123).isPresent());
+        assertTrue(Files.isRegularFile(directory.resolve("maps/" + reference.artwork() + "/0_0.png")));
+        verify(storage, never()).deleteArtwork(reference.artwork());
     }
+    @Test
+    void deletionInvalidatesCachedAndQueuedTilesButPreservesOtherArtworks() throws Exception {
+        MapStorage storage = spy(LegacyMapFixture.copyTo(directory));
+        List<Runnable> workers = new ArrayList<>();
+        List<ImageReference> failures = new ArrayList<>();
+        ImageCache cache = new ImageCache(8, workers::add, (reference, error) -> failures.add(reference));
+        ImageReference removed = ImageReference.thumbnail(LegacyMapFixture.ARTWORK);
+        ImageReference queued = ImageReference.tile(LegacyMapFixture.ARTWORK, 0, 0);
+        ImageReference kept = ImageReference.thumbnail(LegacyMapFixture.OTHER_ARTWORK);
+        BufferedImage removedPixels = storage.read(removed);
+        BufferedImage keptPixels = storage.read(kept);
+        cache.put(storage, removed, removedPixels);
+        cache.put(storage, kept, keptPixels);
+        assertNull(cache.getOrRequest(storage, queued));
+
+        assertTrue(storage.deleteArtwork(removed.artwork()));
+
+        assertNull(cache.getOrRequest(storage, removed));
+        assertNull(cache.getOrRequest(storage, queued));
+        cache.put(storage, removed, removedPixels);
+        assertNull(cache.getOrRequest(storage, removed), "Late preloading cannot restore a deleted artwork");
+        assertSame(keptPixels, cache.getOrRequest(storage, kept));
+        workers.forEach(Runnable::run);
+        verify(storage, never()).read(queued);
+        assertTrue(failures.isEmpty());
+    }
+
+    @Test
+    void deletionDuringBackgroundReadCannotPublishStalePixels() throws Exception {
+        MapStorage storage = spy(LegacyMapFixture.copyTo(directory));
+        List<Runnable> workers = new ArrayList<>();
+        List<ImageReference> failures = new ArrayList<>();
+        ImageCache cache = new ImageCache(2, workers::add, (reference, error) -> failures.add(reference));
+        ImageReference reference = ImageReference.thumbnail(LegacyMapFixture.ARTWORK);
+        BufferedImage pixels = storage.read(reference);
+        doAnswer(call -> {
+            storage.deleteArtwork(reference.artwork());
+            return pixels;
+        }).when(storage).read(reference);
+
+        assertNull(cache.getOrRequest(storage, reference));
+        workers.remove(0).run();
+
+        assertNull(cache.getOrRequest(storage, reference));
+        assertTrue(workers.isEmpty());
+        assertTrue(failures.isEmpty());
+    }
+
 }

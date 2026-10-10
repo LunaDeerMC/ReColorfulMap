@@ -71,27 +71,13 @@ public class ToMap implements TabExecutor {
                 Scheduler.runTask(player, () -> {
                     try {
                         ImageMapItem item = new ImageMapItem(player.getWorld(), artwork, thumbnail);
-                        var references = item.references();
-                        // Map IDs must be allocated on the owning thread; their durable index can be saved off it.
-                        Scheduler.runTaskAsync(() -> {
-                            try {
-                                storage.register(references);
-                                Scheduler.runTask(player, () -> {
-                                    try {
-                                        player.getInventory().addItem(item).values().forEach(leftover ->
-                                                player.getWorld().dropItemNaturally(player.getLocation(), leftover));
-                                        Notification.info(player, Language.toMapCommand.generatedMap, artwork.columns(), artwork.rows());
-                                    } finally {
-                                        generating.remove(player.getUniqueId());
-                                    }
-                                }, () -> generating.remove(player.getUniqueId()));
-                            } catch (Exception e) {
-                                completeFailure(player, e);
-                            }
-                        });
+                        player.getInventory().addItem(item).values().forEach(leftover ->
+                                player.getWorld().dropItemNaturally(player.getLocation(), leftover));
+                        Notification.info(player, Language.toMapCommand.generatedMap, artwork.columns(), artwork.rows());
                     } catch (Exception e) {
-                        generating.remove(player.getUniqueId());
                         reportFailure(player, e);
+                    } finally {
+                        generating.remove(player.getUniqueId());
                     }
                 }, () -> generating.remove(player.getUniqueId()));
             } catch (Exception e) {
