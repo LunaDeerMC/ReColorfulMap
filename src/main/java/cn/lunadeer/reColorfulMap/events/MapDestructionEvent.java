@@ -1,6 +1,5 @@
 package cn.lunadeer.reColorfulMap.events;
 
-import cn.lunadeer.reColorfulMap.MapItemData;
 import cn.lunadeer.reColorfulMap.ReColorfulMap;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.utils.Scheduler;
@@ -17,7 +16,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
-/** Removes artwork files only after the server reports actual destruction of a dropped map. */
+/** Removes artwork files only after the server reports actual destruction of a dropped item. */
 public final class MapDestructionEvent implements Listener {
     private final ReColorfulMap plugin;
     private final MapStorage storage;
@@ -72,7 +71,15 @@ public final class MapDestructionEvent implements Listener {
         if (!isDestructionCause(cause) || !(entity instanceof Item item)) {
             return;
         }
-        MapItemData.reference(item.getItemStack()).ifPresent(reference -> delete(reference.artwork()));
+        // Damage can release a bundle's or shulker box's contents as surviving item entities.
+        // Despawn and falling out of the world actually discard the complete item tree.
+        boolean includeContents = "DESPAWN".equals(cause) || "OUT_OF_WORLD".equals(cause);
+        ContainedMapArtworks.Result result = ContainedMapArtworks.collect(item.getItemStack(), includeContents);
+        result.artworks().forEach(this::delete);
+        if (result.truncated()) {
+            plugin.getLogger().fine("Destroyed container exceeded artwork traversal limits; "
+                    + "unvisited artwork files were kept.");
+        }
     }
 
     private void delete(UUID artwork) {

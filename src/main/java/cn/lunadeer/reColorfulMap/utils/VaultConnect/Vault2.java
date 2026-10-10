@@ -38,7 +38,7 @@ public class Vault2 implements VaultInterface {
     public void withdrawPlayer(Player player, double amount) {
         EconomyResponse response = econ.withdraw("ReColorfulMap", player.getUniqueId(), BigDecimal.valueOf(amount));
         if (!response.transactionSuccess()) {
-            throw new IllegalStateException(response.errorMessage);
+            throw new TransactionRejectedException(response.errorMessage);
         }
     }
 
@@ -46,7 +46,7 @@ public class Vault2 implements VaultInterface {
     public void depositPlayer(Player player, double amount) {
         EconomyResponse response = econ.deposit("ReColorfulMap", player.getUniqueId(), BigDecimal.valueOf(amount));
         if (!response.transactionSuccess()) {
-            throw new IllegalStateException(response.errorMessage);
+            throw new TransactionRejectedException(response.errorMessage);
         }
     }
 

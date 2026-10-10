@@ -1,6 +1,6 @@
 re-colorful-map-text:
   fail-to-load-config: 加载配置文件失败：%s
-  fail-to-load-language: 加载语言文件失败：%s，使用默认语言。
+  fail-to-load-language: 加载语言文件失败：%s，已保留之前使用的语言。
   loading: 正在加载 ReColorfulMap...
   loaded: ReColorfulMap 加载成功！
 image-renderer:
@@ -20,12 +20,10 @@ to-map-command:
   generated-map: 成功生成地图画，画框大小：%d x %d
   generate-map-failed: 生成地图画失败：%s
   player-only: 仅玩家可使用此命令。
+  server-busy: 当前图片处理任务已满，请稍后重试。
 image-map-event:
   not-supported-direction: 不支持在上下方向放置地图画。
   incomplete-item-frame-array: 不完整的物品展示框矩阵，此地图画需要 %d x %d。
-  hook-economy-failed: 获取经济插件失败。
-  balance-not-enough: 余额不足以放置地图画。
-  price-info: 地图画尺寸：%d x %d, 单价：%f, 共计需要花费：%f, 你的余额：%f。
   occupied-item-frame: 所有目标展示框必须为空。
   inconsistent-item-frame-array: 展示框阵列不完整或包含其他图片。
   protected-item-frame: 你没有权限修改阵列中的某些展示框。
@@ -33,6 +31,38 @@ image-map-event:
   unowned-region: 地图画跨越了当前线程无法操作的服务端区域。
   unloaded-chunk: 部分展示框所在的区块尚未加载，请加载整幅画所在区域后重试。
   operation-failed: 地图画操作失败：%s
-reload-command-text:
+  image-loading: 正在加载地图画信息，请稍后重试。
+  operation-busy: 当前地图画操作较多，请稍后重试。
+reload-command:
   reloading-config: 正在重新加载配置文件...
   reload-config-success: 配置文件重新加载成功！
+map-manage:
+  usage: 用法：/mapmanage status|cancel|list|claim <地图画 UUID>
+  admin-usage: 管理：/mapmanage inspect <UUID> | recover <UUID> <在线玩家> confirm | resolve <UUID> <pending|delivered|paid|unpaid|refunded> confirm
+  no-permission: 你没有执行此操作的权限。
+  idle: 你当前没有正在生成的地图画。
+  queued: 你的图片正在排队等待处理。
+  running: 正在生成你的地图画。
+  cancelling: 正在停止生成任务。
+  cancelled: 已请求取消。如果图片已经保存，可通过 /mapmanage list 查看。
+  empty: 你没有待领取的地图画。
+  pending-entry: '%s — %s；生成费用：%.2f。使用 /mapmanage claim <UUID> 领取。'
+  ready: 可以领取
+  review: 等待管理员核查
+  not-owned: 你的待领取列表中没有这个 UUID 的地图画。
+  not-found: 找不到这个 UUID 的交付记录。
+  already-delivered: 这幅地图画已经交付，不能重复领取。
+  needs-review: 上次交付结果无法确认。请联系管理员核查地图画 %s 后再领取。
+  claim-in-progress: 正在准备交付这幅地图画，请稍候。
+  insufficient-funds: 生成这幅地图画需要 %.2f，你的余额不足。图片已经保存，可稍后领取：%s。
+  delivery-uncertain: 地图画未能交付。图片已经保留，请联系管理员核查交付结果后再尝试。
+  economy-unavailable: 经济服务暂时不可用，已经保存的地图画可以稍后领取。
+  invalid-uuid: 请输入有效的地图画 UUID。
+  player-offline: 接收地图画的玩家必须在线。
+  recovery-scheduled: 已为原持有者提交恢复请求，请检查接收者的交付结果。
+  inspect-entry: 地图画 %s；所属玩家 %s；交付状态 %s；支付状态 %s；生成费用 %.2f。
+  inspect-missing: '%s 没有交付记录。恢复前必须确认不存在仍可使用的物品或已放置的副本。'
+  resolved: 已更新交付记录。此操作不会转移物品或扣款、退款。
+  resolve-payment-first: 请先核查经济插件的交易记录，并使用 paid、unpaid 或 refunded 确认支付结果。
+  invalid-resolution: 此支付处理方式不适用于当前记录。
+  operation-failed: 地图画管理操作失败：%s

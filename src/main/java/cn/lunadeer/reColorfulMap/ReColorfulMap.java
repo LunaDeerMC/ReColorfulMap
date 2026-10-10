@@ -3,10 +3,13 @@ package cn.lunadeer.reColorfulMap;
 import cn.lunadeer.reColorfulMap.commands.Clean;
 import cn.lunadeer.reColorfulMap.commands.Reload;
 import cn.lunadeer.reColorfulMap.commands.ToMap;
+import cn.lunadeer.reColorfulMap.commands.MapManage;
 import cn.lunadeer.reColorfulMap.events.ImageMapEvent;
 import cn.lunadeer.reColorfulMap.events.MapBindingEvent;
 import cn.lunadeer.reColorfulMap.events.MapDestructionEvent;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
+import cn.lunadeer.reColorfulMap.services.ArtworkWallService;
+import cn.lunadeer.reColorfulMap.services.GenerationService;
 import cn.lunadeer.reColorfulMap.utils.Notification;
 import cn.lunadeer.reColorfulMap.utils.Scheduler;
 import cn.lunadeer.reColorfulMap.utils.XLogger;
@@ -32,14 +35,20 @@ public final class ReColorfulMap extends JavaPlugin {
         new Notification(this);
         new XLogger(this);
         new Scheduler(this);
-        Configuration.load(ReColorfulMap.getInstance().getServer().getConsoleSender());
-        XLogger.setDebug(Configuration.debug);
+        if (!Configuration.load(getServer().getConsoleSender())) {
+            getLogger().severe("Cannot enable ReColorfulMap with an invalid configuration; the original file was kept.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         XLogger.info(Language.reColorfulMapText.loading);
 
         try {
             mapStorage = new MapStorage(getDataFolder().toPath());
+            mapViewRegistry = new MapViewRegistry(mapStorage);
+            artworkWallService = new ArtworkWallService(this);
+            generationService = new GenerationService(mapStorage, getDataFolder().toPath(), Configuration.snapshot().generation());
         } catch (IOException e) {
-            getLogger().log(java.util.logging.Level.SEVERE, "Cannot open maps storage; existing data was not replaced", e);
+            getLogger().log(java.util.logging.Level.SEVERE, "Cannot initialize map services; existing data was not replaced", e);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -59,8 +68,9 @@ public final class ReColorfulMap extends JavaPlugin {
         Objects.requireNonNull(getCommand("tomap")).setExecutor(new ToMap());
         Objects.requireNonNull(getCommand("reloadColorfulMap")).setExecutor(new Reload());
         Objects.requireNonNull(getCommand("cleanColorfulMap")).setExecutor(new Clean());
+        Objects.requireNonNull(getCommand("mapmanage")).setExecutor(new MapManage());
 
-        getServer().getPluginManager().registerEvents(new ImageMapEvent(), this);
+        getServer().getPluginManager().registerEvents(new ImageMapEvent(artworkWallService), this);
         MapBindingEvent bindings = new MapBindingEvent(this);
         getServer().getPluginManager().registerEvents(bindings, this);
         new MapDestructionEvent(this).register();
@@ -72,6 +82,15 @@ public final class ReColorfulMap extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (generationService != null) {
+            generationService.close();
+        }
+        if (artworkWallService != null) {
+            artworkWallService.close();
+        }
+        if (mapViewRegistry != null) {
+            mapViewRegistry.clear();
+        }
         if (Scheduler.instance != null) {
             Scheduler.cancelAll();
         }
@@ -79,9 +98,24 @@ public final class ReColorfulMap extends JavaPlugin {
 
     private static ReColorfulMap instance;
     private MapStorage mapStorage;
+    private MapViewRegistry mapViewRegistry;
+    private ArtworkWallService artworkWallService;
+    private GenerationService generationService;
 
     public MapStorage getMapStorage() {
         return Objects.requireNonNull(mapStorage, "Map storage has not been initialized");
+    }
+
+    public MapViewRegistry getMapViewRegistry() {
+        return Objects.requireNonNull(mapViewRegistry, "Map view registry has not been initialized");
+    }
+
+    public ArtworkWallService getArtworkWallService() {
+        return Objects.requireNonNull(artworkWallService, "Artwork wall service has not been initialized");
+    }
+
+    public GenerationService getGenerationService() {
+        return Objects.requireNonNull(generationService, "Generation service has not been initialized");
     }
 
     public static ReColorfulMap getInstance() {

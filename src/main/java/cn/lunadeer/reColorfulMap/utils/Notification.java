@@ -36,7 +36,7 @@ public class Notification {
     }
 
     public static void info(Player player, String msg, Object... args) {
-        instance.sender.sendMessage(player, Component.text(instance.prefix + " " + String.format(msg, args), i_style));
+        instance.sender.sendMessage(player, Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), i_style));
     }
 
     public static void warn(Player player, String msg) {
@@ -44,7 +44,7 @@ public class Notification {
     }
 
     public static void warn(Player player, String msg, Object... args) {
-        instance.sender.sendMessage(player, Component.text(instance.prefix + " " + String.format(msg, args), w_style));
+        instance.sender.sendMessage(player, Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), w_style));
     }
 
     public static void error(Player player, String msg) {
@@ -52,7 +52,7 @@ public class Notification {
     }
 
     public static void error(Player player, String msg, Object... args) {
-        instance.sender.sendMessage(player, Component.text(instance.prefix + " " + String.format(msg, args), e_style));
+        instance.sender.sendMessage(player, Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), e_style));
     }
 
     public static void info(CommandSender sender, String msg) {
@@ -60,7 +60,7 @@ public class Notification {
     }
 
     public static void info(CommandSender sender, String msg, Object... args) {
-        instance.sender.sendMessage(sender, Component.text(instance.prefix + " " + String.format(msg, args), i_style));
+        instance.sender.sendMessage(sender, Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), i_style));
     }
 
     public static void warn(CommandSender sender, String msg) {
@@ -68,7 +68,7 @@ public class Notification {
     }
 
     public static void warn(CommandSender sender, String msg, Object... args) {
-        instance.sender.sendMessage(sender, Component.text(instance.prefix + " " + String.format(msg, args), w_style));
+        instance.sender.sendMessage(sender, Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), w_style));
     }
 
     public static void error(CommandSender sender, String msg) {
@@ -76,7 +76,7 @@ public class Notification {
     }
 
     public static void error(CommandSender sender, String msg, Object... args) {
-        instance.sender.sendMessage(sender, Component.text(instance.prefix + " " + String.format(msg, args), e_style));
+        instance.sender.sendMessage(sender, Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), e_style));
     }
 
     public static void info(Player player, Component msg) {
@@ -112,7 +112,7 @@ public class Notification {
     }
 
     public static void all(String msg, Object... args) {
-        instance.sender.broadcast(Component.text(instance.prefix + " " + String.format(msg, args), i_style));
+        instance.sender.broadcast(Component.text(instance.prefix + " " + SafeMessageFormat.format(instance.plugin.getLogger(), msg, args), i_style));
     }
 
     public static void actionBar(Player player, String msg) {
@@ -120,7 +120,7 @@ public class Notification {
     }
 
     public static void actionBar(Player player, String msg, Object... args) {
-        instance.sender.sendActionBar(player, Component.text(String.format(msg, args)));
+        instance.sender.sendActionBar(player, Component.text(SafeMessageFormat.format(instance.plugin.getLogger(), msg, args)));
     }
 
     public static void actionBar(Player player, Component msg) {

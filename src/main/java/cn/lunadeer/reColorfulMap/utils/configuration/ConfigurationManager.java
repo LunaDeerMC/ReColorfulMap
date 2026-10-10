@@ -1,217 +1,156 @@
 package cn.lunadeer.reColorfulMap.utils.configuration;
 
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.util.*;
+import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
-/**
- * Utility class for loading and saving configuration files.
- * <p>
- * This class uses reflection to read and write configuration files. Capable of reading and writing nested configuration parts.
- */
-public class ConfigurationManager {
+/** Strict, staged configuration loading. Reading an existing file never rewrites it. */
+public final class ConfigurationManager {
+    private ConfigurationManager() { }
 
-    /**
-     * Load the configuration file.
-     *
-     * @param clazz The configuration file class. The class should extend {@link ConfigurationFile}.
-     * @param file  The file to load.
-     * @throws Exception If failed to load the file.
-     */
+    public static YamlConfiguration readYaml(File file) throws IOException, InvalidConfigurationException {
+        return readYaml(Files.readString(file.toPath(), StandardCharsets.UTF_8));
+    }
+
+    public static YamlConfiguration readYaml(String contents) throws InvalidConfigurationException {
+        try {
+            LoaderOptions options = new LoaderOptions();
+            options.setAllowDuplicateKeys(false);
+            Object document = new Yaml(new SafeConstructor(options)).load(contents);
+            if (document != null && !(document instanceof Map<?, ?>)) {
+                throw new InvalidConfigurationException("The YAML document must be a mapping");
+            }
+            YamlConfiguration yaml = new YamlConfiguration();
+            yaml.loadFromString(contents);
+            return yaml;
+        } catch (InvalidConfigurationException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new InvalidConfigurationException(e);
+        }
+    }
+
+    /** Values are fully converted into new objects before any public field is modified. */
+    public static Prepared prepare(Class<? extends ConfigurationFile> clazz, YamlConfiguration yaml) throws Exception {
+        Map<Field, Object> values = new LinkedHashMap<>();
+        for (Field field : clazz.getFields()) {
+            if (!Modifier.isStatic(field.getModifiers()) || Modifier.isFinal(field.getModifiers())) continue;
+            String key = camelToKebab(field.getName());
+            values.put(field, readValue(yaml, key, field, field.get(null)));
+        }
+        return new Prepared(values);
+    }
+
+    public static Prepared prepare(Class<? extends ConfigurationFile> clazz, File file) throws Exception {
+        return prepare(clazz, file.exists() ? readYaml(file) : new YamlConfiguration());
+    }
+
     public static void load(Class<? extends ConfigurationFile> clazz, File file) throws Exception {
-        if (!file.exists()) {
-            save(clazz, file);
-            return;
-        }
-        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
-        readConfigurationFile(yaml, clazz, null);
-        yaml.options().width(250);
-        yaml.save(file);
+        Prepared prepared = prepare(clazz, file);
+        if (!file.exists()) savePrepared(prepared, file);
+        prepared.publish();
     }
 
-    /**
-     * Load the configuration file and update the version field if needed.
-     *
-     * @param clazz            The configuration file class. The class should extend {@link ConfigurationFile}.
-     * @param file             The file to load.
-     * @param versionFieldName The name of the version field.
-     * @throws Exception If failed to load the file.
-     */
+    /** Version changes no longer move or rewrite administrators' files while reading them. */
     public static void load(Class<? extends ConfigurationFile> clazz, File file, String versionFieldName) throws Exception {
-        Field versionField = clazz.getField(versionFieldName);
-        int currentVersion = versionField.getInt(null);
         load(clazz, file);
-        if (versionField.getInt(null) != currentVersion) {
-            File backup = new File(file.getParentFile(), file.getName() + ".bak");
-            if (backup.exists() && !backup.delete()) {
-                throw new Exception("Failed to delete the backup configuration file.");
+    }
+
+    public static void save(Class<? extends ConfigurationFile> clazz, File file) throws Exception {
+        Map<Field, Object> values = new LinkedHashMap<>();
+        for (Field field : clazz.getFields()) {
+            if (Modifier.isStatic(field.getModifiers()) && !Modifier.isFinal(field.getModifiers())) {
+                values.put(field, field.get(null));
             }
-            if (!file.renameTo(backup)) {
-                throw new Exception("Failed to backup the configuration file.");
+        }
+        savePrepared(new Prepared(values), file);
+    }
+
+    private static Object readValue(YamlConfiguration yaml, String key, Field field, Object fallback) throws Exception {
+        if (ConfigurationPart.class.isAssignableFrom(field.getType())) {
+            if (yaml.contains(key) && !yaml.isConfigurationSection(key)) throw typeError(key, "mapping");
+            Object part = field.getType().getDeclaredConstructor().newInstance();
+            for (Field child : field.getType().getFields()) {
+                if (Modifier.isStatic(child.getModifiers()) || Modifier.isFinal(child.getModifiers())) continue;
+                child.set(part, readValue(yaml, key + "." + camelToKebab(child.getName()), child, child.get(part)));
             }
-            clazz.getField(versionFieldName).set(null, currentVersion);
-            save(clazz, file);
+            return part;
+        }
+        if (!yaml.contains(key)) return fallback instanceof List<?> list ? List.copyOf(list) : fallback;
+        Object value = yaml.get(key);
+        Class<?> type = field.getType();
+        if (type == String.class && value instanceof String) return value;
+        if (type == boolean.class && value instanceof Boolean) return value;
+        if (type == int.class && value instanceof Integer) return value;
+        if (type == long.class && (value instanceof Integer || value instanceof Long)) return ((Number) value).longValue();
+        if ((type == double.class || type == float.class) && value instanceof Number number && Double.isFinite(number.doubleValue())) {
+            if (type == float.class) return number.floatValue();
+            return number.doubleValue();
+        }
+        if (List.class.isAssignableFrom(type) && value instanceof List<?> list && list.stream().allMatch(String.class::isInstance)) return List.copyOf(list);
+        throw typeError(key, type.getSimpleName());
+    }
+
+    private static InvalidConfigurationException typeError(String key, String expected) {
+        return new InvalidConfigurationException(key + " must be a " + expected);
+    }
+
+    public static void saveYaml(YamlConfiguration yaml, File file) throws IOException {
+        Path target = file.toPath().toAbsolutePath();
+        Files.createDirectories(target.getParent());
+        Path temporary = Files.createTempFile(target.getParent(), ".configuration-", ".tmp");
+        try {
+            Files.writeString(temporary, yaml.saveToString(), StandardCharsets.UTF_8);
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 
-    /**
-     * Save the configuration file.
-     *
-     * @param clazz The configuration file class. The class should extend {@link ConfigurationFile}.
-     * @param file  The file to save.
-     * @throws Exception If failed to save the file.
-     */
-    public static void save(Class<? extends ConfigurationFile> clazz, File file) throws Exception {
-        createIfNotExist(file);
+    private static void savePrepared(Prepared prepared, File file) throws Exception {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.options().width(250);
-        writeConfigurationFile(yaml, clazz, null);
-        yaml.save(file);
+        for (Map.Entry<Field, Object> value : prepared.values.entrySet()) {
+            writeValue(yaml, camelToKebab(value.getKey().getName()), value.getKey(), value.getValue());
+        }
+        saveYaml(yaml, file);
     }
 
-    private static void writeConfigurationFile(YamlConfiguration yaml, Class<? extends ConfigurationFile> clazz, String prefix) throws Exception {
-        for (Field field : clazz.getFields()) {
-            field.setAccessible(true);
-            String key = camelToKebab(field.getName());
-            if (prefix != null && !prefix.isEmpty()) {
-                key = prefix + "." + key;
+    private static void writeValue(YamlConfiguration yaml, String key, Field field, Object value) throws Exception {
+        if (value instanceof ConfigurationPart) {
+            for (Field child : value.getClass().getFields()) {
+                if (!Modifier.isStatic(child.getModifiers())) writeValue(yaml, key + "." + camelToKebab(child.getName()), child, child.get(value));
             }
-            // if field is extending ConfigurationPart, recursively write the content
-            if (ConfigurationPart.class.isAssignableFrom(field.getType())) {
-                writeConfigurationPart(yaml, (ConfigurationPart) field.get(null), key);
-            } else {
-                yaml.set(key, field.get(null));
-            }
-            if (field.isAnnotationPresent(Comments.class)) {
-                yaml.setComments(key, List.of(field.getAnnotation(Comments.class).value()));
-            }
+        } else {
+            yaml.set(key, value);
         }
+        if (field.isAnnotationPresent(Comments.class)) yaml.setComments(key, List.of(field.getAnnotation(Comments.class).value()));
     }
 
-    private static void writeConfigurationPart(YamlConfiguration yaml, ConfigurationPart obj, String key) throws Exception {
-        for (Field field : obj.getClass().getFields()) {
-            field.setAccessible(true);
-            String newKey = key + "." + camelToKebab(field.getName());
-            if (ConfigurationPart.class.isAssignableFrom(field.getType())) {
-                writeConfigurationPart(yaml, (ConfigurationPart) field.get(obj), newKey);
-            } else {
-                yaml.set(newKey, field.get(obj));
-            }
-            if (field.isAnnotationPresent(Comments.class)) {
-                yaml.setComments(newKey, List.of(field.getAnnotation(Comments.class).value()));
-            }
-        }
-    }
-
-    private static void createIfNotExist(File file) throws Exception {
-        if (file.exists()) return;
-        if (!file.getParentFile().exists() && !file.getParentFile().mkdirs())
-            throw new Exception("Failed to create %s directory.".formatted(file.getParentFile().getAbsolutePath()));
-        if (!file.createNewFile()) throw new Exception("Failed to create %s file.".formatted(file.getAbsolutePath()));
-    }
-
-    private static void readConfigurationFile(YamlConfiguration yaml, Class<? extends ConfigurationFile> clazz, String prefix) throws Exception {
-        PrePostProcessInorder processes = getAndSortPrePostProcess(clazz);
-        // execute methods with @PreProcess annotation
-        for (Method method : processes.preProcessMethods) {
-            method.invoke(null);
-        }
-        for (Field field : clazz.getFields()) {
-            field.setAccessible(true);
-            String key = camelToKebab(field.getName());
-            if (prefix != null && !prefix.isEmpty()) {
-                key = prefix + "." + key;
-            }
-            boolean missingKey = !yaml.contains(key);
-            if (missingKey) {
-                yaml.createSection(key);
-                if (field.isAnnotationPresent(Comments.class)) {
-                    yaml.setComments(key, List.of(field.getAnnotation(Comments.class).value()));
-                }
-            }
-            if (ConfigurationPart.class.isAssignableFrom(field.getType())) {
-                readConfigurationPart(yaml, (ConfigurationPart) field.get(null), key);
-            } else {
-                if (missingKey) {
-                    yaml.set(key, field.get(null));
-                } else {
-                    field.set(null, yaml.get(key));
-                }
-            }
-        }
-        // execute methods with @PostProcess annotation
-        for (Method method : processes.postProcessMethods) {
-            method.invoke(null);
-        }
-    }
-
-    private static void readConfigurationPart(YamlConfiguration yaml, ConfigurationPart obj, String key) throws Exception {
-        for (Field field : obj.getClass().getFields()) {
-            field.setAccessible(true);
-            String newKey = key + "." + camelToKebab(field.getName());
-            boolean missingKey = !yaml.contains(newKey);
-            if (missingKey) {
-                yaml.createSection(newKey);
-                if (field.isAnnotationPresent(Comments.class)) {
-                    yaml.setComments(newKey, List.of(field.getAnnotation(Comments.class).value()));
-                }
-            }
-            if (ConfigurationPart.class.isAssignableFrom(field.getType())) {
-                readConfigurationPart(yaml, (ConfigurationPart) field.get(obj), newKey);
-            } else {
-                if (missingKey) {
-                    yaml.set(newKey, field.get(obj));
-                } else {
-                    field.set(obj, yaml.get(newKey));
-                }
-            }
-        }
-    }
-
-    /**
-     * Converts a camelCase string to kebab-case.
-     *
-     * @param camel The camelCase string.
-     * @return The kebab-case string.
-     */
     private static String camelToKebab(String camel) {
-        return camel.replaceAll("([a-z])([A-Z]+)", "$1-$2").toLowerCase();
+        return camel.replaceAll("([a-z])([A-Z]+)", "$1-$2").toLowerCase(java.util.Locale.ROOT);
     }
 
-    private static class PrePostProcessInorder {
-        public List<Method> preProcessMethods = new ArrayList<>();
-        public List<Method> postProcessMethods = new ArrayList<>();
-    }
-
-    /**
-     * Get methods with @PreProcess and @PostProcess annotations and sort them by priority.
-     * <p>
-     * The methods with higher priority will be executed first.
-     *
-     * @param clazz The configuration file class.
-     * @return A {@link PrePostProcessInorder} object containing the sorted methods.
-     */
-    private static PrePostProcessInorder getAndSortPrePostProcess(Class<? extends ConfigurationFile> clazz) {
-        Map<Method, Integer> preProcessMethodsWithPriority = new HashMap<>();
-        Map<Method, Integer> postProcessMethodsWithPriority = new HashMap<>();
-        for (Method method : clazz.getMethods()) {
-            if (method.isAnnotationPresent(PreProcess.class)) {
-                preProcessMethodsWithPriority.put(method, method.getAnnotation(PreProcess.class).priority());
-            }
-            if (method.isAnnotationPresent(PostProcess.class)) {
-                postProcessMethodsWithPriority.put(method, method.getAnnotation(PostProcess.class).priority());
-            }
+    public static final class Prepared {
+        private final Map<Field, Object> values;
+        private Prepared(Map<Field, Object> values) { this.values = Map.copyOf(values); }
+        public void publish() throws IllegalAccessException {
+            // Every field and value has been validated during prepare; no user code runs here.
+            for (Map.Entry<Field, Object> value : values.entrySet()) value.getKey().set(null, value.getValue());
         }
-        PrePostProcessInorder result = new PrePostProcessInorder();
-        // sort methods by priority ascending
-        result.preProcessMethods = new ArrayList<>(preProcessMethodsWithPriority.keySet());
-        result.preProcessMethods.sort(Comparator.comparingInt(preProcessMethodsWithPriority::get));
-        result.postProcessMethods = new ArrayList<>(postProcessMethodsWithPriority.keySet());
-        result.postProcessMethods.sort(Comparator.comparingInt(postProcessMethodsWithPriority::get));
-        return result;
     }
-
 }

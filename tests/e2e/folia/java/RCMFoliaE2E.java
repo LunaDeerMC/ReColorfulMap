@@ -3,6 +3,10 @@ package test.recolorfulmap.folia;
 import com.google.gson.GsonBuilder;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.block.BlockFace;
+import org.bukkit.entity.ItemFrame;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -35,6 +39,7 @@ public final class RCMFoliaE2E extends JavaPlugin implements Listener {
     private static final NamespacedKey IMAGE = new NamespacedKey("re_colorful_map", "image_path");
     private final List<Map<String, Object>> events = new CopyOnWriteArrayList<>();
     private volatile String destruction = "none";
+    private final List<ItemFrame> frames = new ArrayList<>();
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
@@ -61,6 +66,25 @@ public final class RCMFoliaE2E extends JavaPlugin implements Listener {
                     player.setInvulnerable(true);
                     player.getInventory().clear();
                     player.getInventory().setHeldItemSlot(0);
+                }
+                case "wall" -> {
+                    for (ItemFrame frame : frames) if (frame.isValid() && Bukkit.isOwnedByCurrentRegion(frame)) frame.remove();
+                    frames.clear();
+                    Location origin = player.getLocation().getBlock().getLocation().add(0, 1, -3);
+                    for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) {
+                        Location tile = origin.clone().add(x, y, 0);
+                        if (!Bukkit.isOwnedByCurrentRegion(tile)) throw new IllegalStateException("Fixture wall crosses a region");
+                        tile.clone().add(0, 0, -1).getBlock().setType(Material.STONE);
+                        tile.getBlock().setType(Material.AIR);
+                        ItemFrame frame = player.getWorld().spawn(tile.clone().add(0.5, 0.5, 0.5), ItemFrame.class,
+                                entity -> entity.setFacingDirection(BlockFace.SOUTH, true));
+                        frames.add(frame);
+                    }
+                }
+                case "teleport-frame" -> {
+                    ItemFrame frame = frames.get(Integer.parseInt(args[1]));
+                    Location target = frame.getLocation().clone().add(0, -1, 2.5); target.setYaw(180); target.setPitch(0);
+                    player.teleportAsync(target);
                 }
                 case "equip" -> {
                     for (int slot = 0; slot < 36; slot++) {
@@ -151,7 +175,16 @@ public final class RCMFoliaE2E extends JavaPlugin implements Listener {
                 }
                 inventory.add(entry);
             }
-            Map<String, Object> state = Map.of("inventory", inventory, "events", List.copyOf(events),
+            List<Map<String, Object>> walls = new ArrayList<>();
+            for (ItemFrame frame : frames) {
+                if (!Bukkit.isOwnedByCurrentRegion(frame)) continue;
+                ItemStack item = frame.getItem();
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("entityId", frame.getEntityId()); entry.put("path", path(item));
+                if (item.getItemMeta() instanceof MapMeta meta && meta.getMapView() != null) entry.put("mapId", meta.getMapView().getId());
+                walls.add(entry);
+            }
+            Map<String, Object> state = Map.of("inventory", inventory, "frames", walls, "events", List.copyOf(events),
                     "player", player.getName(), "time", System.currentTimeMillis());
             var directory = getDataFolder().toPath();
             var temporary = directory.resolve("state.json.tmp");

@@ -1,6 +1,6 @@
 re-colorful-map-text:
   fail-to-load-config: 'Failed to load configuration file: %s'
-  fail-to-load-language: 'Failed to load language file: %s, using default language.'
+  fail-to-load-language: 'Failed to load language file: %s; previous language was kept.'
   loading: ReColorfulMap is loading...
   loaded: ReColorfulMap is loaded successfully!
 image-renderer:
@@ -20,12 +20,10 @@ to-map-command:
   generated-map: 'Generated map, frame size: %d x %d'
   generate-map-failed: 'Failed to generate map: %s'
   player-only: Only players can use this command.
+  server-busy: All image processing slots are busy. Please try again later.
 image-map-event:
   not-supported-direction: Don't support place image map in up or down direction
   incomplete-item-frame-array: Incomplete item frame array need (%d x %d)
-  hook-economy-failed: Failed to hook economy plugin.
-  balance-not-enough: Not enough balance to place image map.
-  price-info: 'Matrix size: %d x %d, unit price: %f, total price: %f, your balance: %f'
   occupied-item-frame: All item frames must be empty.
   inconsistent-item-frame-array: The item frame array is incomplete or contains a different image.
   protected-item-frame: You cannot modify one or more of these item frames.
@@ -33,6 +31,38 @@ image-map-event:
   unowned-region: The image crosses a server region that cannot be modified from here.
   unloaded-chunk: Some item frames are in unloaded chunks. Load the entire image area and try again.
   operation-failed: 'Failed to update image map: %s'
+  image-loading: Loading image metadata. Please try again in a moment.
+  operation-busy: Too many image wall operations are running. Please try again shortly.
 reload-command:
   reloading-config: Reloading configuration file...
   reload-config-success: Configuration file reloaded successfully!
+map-manage:
+  usage: 'Usage: /mapmanage status|cancel|list|claim <artwork UUID>'
+  admin-usage: 'Admin: /mapmanage inspect <UUID> | recover <UUID> <online player> confirm | resolve <UUID> <pending|delivered|paid|unpaid|refunded> confirm'
+  no-permission: You do not have permission to use this operation.
+  idle: No image is currently being generated.
+  queued: Your image is waiting for an available processing slot.
+  running: Your image is being generated.
+  cancelling: Your generation task is stopping.
+  cancelled: Cancellation requested. If the image was already saved, you can find it with /mapmanage list.
+  empty: You have no maps waiting for delivery.
+  pending-entry: '%s — %s; creation price: %.2f. Use /mapmanage claim <UUID>.'
+  ready: Ready to claim
+  review: Awaiting administrator review
+  not-owned: No map waiting for delivery was found with this UUID in your account.
+  not-found: No delivery record was found for this UUID.
+  already-delivered: This map has already been delivered. It cannot be claimed again.
+  needs-review: The previous delivery could not be confirmed. Ask an administrator to check artwork %s before it can be claimed again.
+  claim-in-progress: This map is already being prepared for delivery.
+  insufficient-funds: Creating this map costs %.2f. Your balance is too low; the image was saved as %s for later claiming.
+  delivery-uncertain: The map could not be delivered. Its image was kept; ask an administrator to check delivery before trying again.
+  economy-unavailable: The economy service is unavailable. Your saved map can be claimed later.
+  invalid-uuid: Please enter a valid artwork UUID.
+  player-offline: The recipient must be online.
+  recovery-scheduled: Recovery was requested for the original owner. Check the recipient's delivery result.
+  inspect-entry: Artwork %s; owner %s; delivery %s; payment %s; quoted price %.2f.
+  inspect-missing: No receipt exists for %s. Recovery requires first checking that no usable item or placed copy remains.
+  resolved: Delivery record updated. This does not transfer items or money.
+  resolve-payment-first: First confirm the economy transaction and resolve it as paid, unpaid or refunded.
+  invalid-resolution: This payment resolution does not apply to the current record.
+  operation-failed: 'Map management failed: %s'

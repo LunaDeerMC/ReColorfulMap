@@ -21,7 +21,6 @@ dependencies {
     compileOnly("io.papermc.paper:paper-api:1.20.1-R0.1-SNAPSHOT")
     compileOnly("com.github.MilkBowl:VaultAPI:1.7")
     compileOnly("net.milkbowl.vault:VaultUnlockedAPI:2.7")
-    implementation("net.kyori:adventure-platform-bukkit:4.3.3")
     testImplementation("io.papermc.paper:paper-api:1.20.1-R0.1-SNAPSHOT")
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -51,10 +50,21 @@ tasks.processResources {
     }
 }
 
+tasks.jar {
+    archiveClassifier.set("plain")
+}
+
 tasks.shadowJar {
     archiveClassifier.set("")
     archiveVersion.set(project.version.toString())
     dependsOn(tasks.withType<ProcessResources>())
+}
+
+// CI publishes this exact artifact after the checks job has succeeded.
+tasks.register<Copy>("stageRelease") {
+    dependsOn(tasks.shadowJar)
+    from(tasks.shadowJar.flatMap { it.archiveFile })
+    into(layout.buildDirectory.dir("release"))
 }
 
 hangarPublish {
@@ -62,19 +72,22 @@ hangarPublish {
         version.set(project.version as String) // use project version as publication version
         id.set("ReColorfulMap")
         channel.set("Release")
-        changelog.set("See https://github.com/ColdeZhang/ReColorfulMap/releases/tag/v${project.version}")
+        changelog.set("See https://github.com/LunaDeerMC/ReColorfulMap/releases/tag/v${project.version}")
         apiKey.set(System.getenv("HANGAR_TOKEN"))
         // register platforms
         platforms {
             register(Platforms.PAPER) {
-                jar.set(tasks.shadowJar.flatMap { it.archiveFile })
-                kotlin.io.println("ShadowJar: ${tasks.shadowJar.flatMap { it.archiveFile }}")
-                platformVersions.set(kotlin.collections.listOf("1.20.1-1.20.6", "1.21.x"))
+                jar.set(providers.gradleProperty("checkedReleaseJar")
+                    .map { layout.projectDirectory.file(it) }
+                    .orElse(tasks.shadowJar.flatMap { it.archiveFile }))
+                platformVersions.set(kotlin.collections.listOf("1.20.1-1.20.6", "1.21.x", "26.2"))
             }
         }
     }
 }
 
 tasks.named("publishPluginPublicationToHangar") {
-    dependsOn(tasks.named("jar"))
+    if (!providers.gradleProperty("checkedReleaseJar").isPresent) {
+        dependsOn(tasks.shadowJar)
+    }
 }

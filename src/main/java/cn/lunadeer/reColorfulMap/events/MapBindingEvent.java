@@ -1,9 +1,7 @@
 package cn.lunadeer.reColorfulMap.events;
 
-import cn.lunadeer.reColorfulMap.ImageRenderer;
 import cn.lunadeer.reColorfulMap.MapItemData;
 import cn.lunadeer.reColorfulMap.ReColorfulMap;
-import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
 import cn.lunadeer.reColorfulMap.utils.XLogger;
 import com.destroystokyo.paper.event.entity.EntityAddToWorldEvent;
@@ -26,10 +24,8 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
-import org.bukkit.map.MapRenderer;
 import org.bukkit.map.MapView;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -56,21 +52,8 @@ public final class MapBindingEvent implements Listener {
             XLogger.warn("Cannot restore image map without a MapView: %s", reference.get().path());
             return;
         }
-        MapStorage storage = plugin.getMapStorage();
-        // A map can be visible from several regions. Attach its renderer only once.
-        synchronized (view) {
-            List<MapRenderer> existing = List.copyOf(view.getRenderers());
-            for (MapRenderer renderer : existing) {
-                if (renderer instanceof ImageRenderer image && image.matches(storage, reference.get())) {
-                    return;
-                }
-            }
-            // CraftMapView returns a snapshot, so clearing getRenderers() is insufficient.
-            for (MapRenderer renderer : existing) {
-                view.removeRenderer(renderer);
-            }
-            view.addRenderer(new ImageRenderer(storage, reference.get()));
-        }
+        plugin.getMapViewRegistry().register(view, reference.get());
+        plugin.getArtworkWallService().preload(reference.get().artwork());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

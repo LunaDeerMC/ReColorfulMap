@@ -14,7 +14,10 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -39,6 +42,11 @@ public final class MapStorage {
     private final Path mapsDirectory;
     private final Set<Path> activeStaging = ConcurrentHashMap.newKeySet();
     private final Set<UUID> deletedArtworks = ConcurrentHashMap.newKeySet();
+    // Dimensions are immutable for published artwork. Bound metadata independently of pixels.
+    private final Map<UUID, Artwork> artworks = new LinkedHashMap<>(16, 0.75f, true);
+    private final Map<UUID, FileTime> artworkDirectoryTimes = new java.util.HashMap<>();
+    private static final int MAX_CACHED_ARTWORKS = 4096;
+    private final Set<UUID> validatedArtworks = ConcurrentHashMap.newKeySet();
 
     /** Tile coordinates start at the top left, as in ColorfulMap 2.3. */
     public record ImageReference(UUID artwork, int x, int y) {
@@ -150,7 +158,7 @@ public final class MapStorage {
                 }
             }
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
-            return new Artwork(id, columns, rows);
+            return cacheArtwork(new Artwork(id, columns, rows));
         } finally {
             try {
                 // Any failed write leaves the published artwork directories untouched.
@@ -165,7 +173,21 @@ public final class MapStorage {
 
     /** Infers the matrix from actual tile names; legacy meta.txt is only an operation log. */
     public Artwork artwork(UUID id) throws IOException {
+        if (isDeleted(id)) {
+            throw new IOException("Artwork was deleted: " + id);
+        }
         Path directory = artworkDirectory(id);
+        FileTime modified = Files.getLastModifiedTime(directory, LinkOption.NOFOLLOW_LINKS);
+        synchronized (artworks) {
+            Artwork cached = artworks.get(id);
+            if (cached != null && modified.equals(artworkDirectoryTimes.get(id))) {
+                return cached;
+            }
+            // A file added/removed since validation must not be hidden by cached dimensions.
+            artworks.remove(id);
+            artworkDirectoryTimes.remove(id);
+            validatedArtworks.remove(id);
+        }
         int maxX = -1;
         int maxY = -1;
         long count = 0;
@@ -190,7 +212,62 @@ public final class MapStorage {
             throw new IOException("Incomplete tile matrix: " + directory);
         }
         requireRegularFile(directory.resolve("thumb.png"));
-        return new Artwork(id, maxX + 1, maxY + 1);
+        return cacheArtwork(new Artwork(id, maxX + 1, maxY + 1));
+    }
+
+    /** In-memory lookup only. Event handlers must not scan image directories. */
+    public Optional<Artwork> cachedArtwork(UUID id) {
+        synchronized (artworks) {
+            return deletedArtworks.contains(id) ? Optional.empty() : Optional.ofNullable(artworks.get(id));
+        }
+    }
+
+    private Artwork cacheArtwork(Artwork artwork) throws IOException {
+        FileTime modified = Files.getLastModifiedTime(artworkDirectory(artwork.id()), LinkOption.NOFOLLOW_LINKS);
+        synchronized (artworks) {
+            if (deletedArtworks.contains(artwork.id())) {
+                throw new IOException("Artwork was deleted: " + artwork.id());
+            }
+            artworks.put(artwork.id(), artwork);
+            artworkDirectoryTimes.put(artwork.id(), modified);
+            while (artworks.size() > MAX_CACHED_ARTWORKS) {
+                UUID oldest = artworks.keySet().iterator().next();
+                artworks.remove(oldest);
+                artworkDirectoryTimes.remove(oldest);
+                validatedArtworks.remove(oldest);
+            }
+        }
+        return artwork;
+    }
+
+    /**
+     * Full corruption check off the server thread. Discard each decoded tile before reading the next;
+     * immutable published files need this check only once per bounded metadata-cache lifetime.
+     */
+    public void validateArtwork(Artwork artwork) throws IOException {
+        if (isDeleted(artwork.id())) {
+            throw new IOException("Artwork was deleted: " + artwork.id());
+        }
+        if (validatedArtworks.contains(artwork.id())) {
+            return;
+        }
+        read(ImageReference.thumbnail(artwork.id()));
+        for (int x = 0; x < artwork.columns(); x++) {
+            for (int y = 0; y < artwork.rows(); y++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new java.io.InterruptedIOException("Artwork validation was interrupted");
+                }
+                read(ImageReference.tile(artwork.id(), x, y));
+            }
+        }
+        synchronized (artworks) {
+            if (isDeleted(artwork.id())) {
+                throw new IOException("Artwork was deleted: " + artwork.id());
+            }
+            if (artworks.containsKey(artwork.id())) {
+                validatedArtworks.add(artwork.id());
+            }
+        }
     }
 
     /** Checks image dimensions before decoding pixels to avoid loading oversized map images. */
@@ -242,6 +319,11 @@ public final class MapStorage {
         try {
             Files.move(directory, temporary, StandardCopyOption.ATOMIC_MOVE);
             deletedArtworks.add(id);
+            synchronized (artworks) {
+                artworks.remove(id);
+                artworkDirectoryTimes.remove(id);
+                validatedArtworks.remove(id);
+            }
             // walkFileTree does not follow symbolic links, including any stored inside this directory.
             deleteTree(temporary);
             return true;

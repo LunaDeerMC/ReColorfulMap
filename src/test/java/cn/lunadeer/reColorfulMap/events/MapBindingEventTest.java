@@ -2,6 +2,8 @@ package cn.lunadeer.reColorfulMap.events;
 
 import cn.lunadeer.reColorfulMap.ImageRenderer;
 import cn.lunadeer.reColorfulMap.MapItemData;
+import cn.lunadeer.reColorfulMap.MapViewRegistry;
+import cn.lunadeer.reColorfulMap.services.ArtworkWallService;
 import cn.lunadeer.reColorfulMap.ReColorfulMap;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
@@ -67,19 +69,22 @@ class MapBindingEventTest {
 
     private final ReColorfulMap plugin = mock(ReColorfulMap.class);
     private final MapStorage storage = mock(MapStorage.class);
+    private final ArtworkWallService walls = mock(ArtworkWallService.class);
     private final Server server = mock(Server.class);
     private final MapBindingEvent listener = new MapBindingEvent(plugin);
 
     @BeforeEach
     void setUp() {
         when(plugin.getMapStorage()).thenReturn(storage);
+        when(plugin.getMapViewRegistry()).thenReturn(new MapViewRegistry(storage));
+        when(plugin.getArtworkWallService()).thenReturn(walls);
         when(plugin.getServer()).thenReturn(server);
         when(server.isOwnedByCurrentRegion(any(Entity.class))).thenReturn(true);
     }
 
     @ParameterizedTest
     @ValueSource(ints = {0, 123, 100000})
-    void bindsFromItemPathWithoutMapIdWorldIndexOrImmediatePngReads(int mapId) {
+    void bindsFromItemPathAndRegistersExistingWorldViewWithoutImmediateDiskReads(int mapId) throws Exception {
         MapView view = view();
         when(view.getId()).thenReturn(mapId);
         MapRenderer vanilla = mock(MapRenderer.class);
@@ -91,9 +96,11 @@ class MapBindingEventTest {
         ImageRenderer renderer = assertInstanceOf(ImageRenderer.class, view.getRenderers().get(0));
         assertTrue(renderer.matches(storage, IMAGE));
         verify(view).removeRenderer(vanilla);
-        verify(view, never()).getWorld();
+        verify(view).getWorld();
         verify(view, never()).getId();
-        verifyNoInteractions(storage);
+        verify(storage).isDeleted(IMAGE.artwork());
+        verify(walls).preload(IMAGE.artwork());
+        verifyNoDiskReads();
     }
 
     @Test
@@ -214,7 +221,7 @@ class MapBindingEventTest {
     }
 
     @Test
-    void entityLoadingRestoresFramesDroppedItemsDisplaysAndContainerEntities() {
+    void entityLoadingRestoresFramesDroppedItemsDisplaysAndContainerEntities() throws Exception {
         MapView frameView = view();
         MapView droppedView = view();
         MapView displayView = view();
@@ -235,7 +242,8 @@ class MapBindingEventTest {
         for (MapView view : List.of(frameView, droppedView, displayView, cartView)) {
             assertEquals(1, view.getRenderers().size());
         }
-        verifyNoInteractions(storage);
+        verify(walls, times(4)).preload(IMAGE.artwork());
+        verifyNoDiskReads();
     }
 
     @Test
@@ -257,6 +265,7 @@ class MapBindingEventTest {
         listener.onEntityAdd(event);
 
         verify(frame, never()).getItem();
+        verifyNoInteractions(storage, walls);
         assertEquals(1, pending.size());
         pending.get(0).accept(mock(ScheduledTask.class));
         assertEquals(1, view.getRenderers().size());
@@ -338,6 +347,12 @@ class MapBindingEventTest {
         assertEquals(1, view.getRenderers().size());
     }
 
+    private void verifyNoDiskReads() throws Exception {
+        verify(storage, never()).read(any());
+        verify(storage, never()).artwork(any());
+        verify(storage, never()).validateArtwork(any());
+    }
+
     private static Inventory inventory(ItemStack... contents) {
         Inventory inventory = mock(Inventory.class);
         when(inventory.getContents()).thenReturn(contents);
@@ -363,6 +378,9 @@ class MapBindingEventTest {
 
     private static MapView view() {
         MapView view = mock(MapView.class);
+        World world = mock(World.class);
+        when(world.getUID()).thenReturn(UUID.randomUUID());
+        when(view.getWorld()).thenReturn(world);
         List<MapRenderer> renderers = new ArrayList<>();
         // Match CraftMapView: getRenderers returns a copy, not the mutable underlying list.
         when(view.getRenderers()).thenAnswer(call -> new ArrayList<>(renderers));

@@ -16,6 +16,8 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
+import org.bukkit.entity.GlowItemFrame;
+import org.bukkit.event.hanging.HangingBreakEvent;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -31,6 +33,7 @@ import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
 import org.bukkit.persistence.PersistentDataType;
@@ -67,6 +70,7 @@ public final class RCME2E extends JavaPlugin implements Listener {
     private String lastError = "";
     private String phase = "enabled";
     private BlockFace facing = BlockFace.SOUTH;
+    private boolean glow;
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
@@ -91,10 +95,42 @@ public final class RCME2E extends JavaPlugin implements Listener {
                 case "setup" -> setup(player);
                 case "wall" -> {
                     if (args.length > 1) facing = BlockFace.valueOf(args[1].toUpperCase(java.util.Locale.ROOT));
-                    wall(player.getWorld());
+                    glow = args.length > 4 && args[4].equals("glow");
+                    wall(player.getWorld(), args.length > 2 ? Integer.parseInt(args[2]) : 2, args.length > 3 ? Integer.parseInt(args[3]) : 2);
                 }
                 case "equip" -> equip(player);
+                case "equip-map" -> {
+                    int expectedId = Integer.parseInt(args[1]); boolean found = false;
+                    for (int slot = 0; slot < 36; slot++) {
+                        ItemStack item = player.getInventory().getItem(slot);
+                        if (item == null || !(item.getItemMeta() instanceof MapMeta meta) || meta.getMapView() == null || meta.getMapView().getId() != expectedId) continue;
+                        ItemStack old = player.getInventory().getItem(0); player.getInventory().setItem(0, item);
+                        if (slot != 0) player.getInventory().setItem(slot, old);
+                        player.getInventory().setHeldItemSlot(0); found = true; break;
+                    }
+                    if (!found) throw new IllegalStateException("Map ID not in inventory: " + expectedId);
+                }
                 case "collect" -> collect(player, args.length > 1 ? args[1] : null);
+                case "collect-uuid" -> {
+                    Item item = (Item) Bukkit.getEntity(UUID.fromString(args[1]));
+                    item.setPickupDelay(0); player.teleport(item.getLocation());
+                }
+                case "wrap" -> {
+                    ItemStack nested = player.getInventory().getItemInMainHand().clone();
+                    if (imagePath(nested) == null) throw new IllegalStateException("Need image in hand");
+                    for (String kind : args[1].split(",")) {
+                        ItemStack container = new ItemStack(kind.equals("bundle") ? Material.BUNDLE : Material.SHULKER_BOX);
+                        if (container.getItemMeta() instanceof BundleMeta meta) {
+                            meta.setItems(List.of(nested)); container.setItemMeta(meta);
+                        } else {
+                            BlockStateMeta meta = (BlockStateMeta) container.getItemMeta();
+                            ShulkerBox box = (ShulkerBox) meta.getBlockState();
+                            box.getInventory().setItem(0, nested); meta.setBlockState(box); container.setItemMeta(meta);
+                        }
+                        nested = container;
+                    }
+                    player.getInventory().setItemInMainHand(nested);
+                }
                 case "protect" -> deniedFrame = args[1].equals("off") ? null : frames.get(Integer.parseInt(args[1]));
                 case "protect-source" -> {
                     deniedFrame = args[1].equals("off") ? null : frames.get(Integer.parseInt(args[1]));
@@ -178,24 +214,29 @@ public final class RCME2E extends JavaPlugin implements Listener {
             world.getBlockAt(x, Y - 2, z).setType(Material.STONE);
             for (int y = Y - 1; y <= Y + 4; y++) world.getBlockAt(x, y, z).setType(Material.AIR);
         }
-        facing = BlockFace.SOUTH;
+        facing = BlockFace.SOUTH; glow = false;
         wall(world);
         player.teleport(new Location(world, X + 0.5, Y - 1, Z + 3, 180, 0));
         player.getInventory().setHeldItemSlot(0);
         deniedFrame = null; sourceOnly = false; cancelSpawn = false; cancelDespawn = false; destruction = "";
     }
 
-    private void wall(World world) {
+    private void wall(World world) { wall(world, 2, 2); }
+
+    private void wall(World world, int columns, int rows) {
+        for (UUID old : frames) { Entity entity = Bukkit.getEntity(old); if (entity != null) entity.remove(); }
         for (Entity entity : world.getNearbyEntities(new Location(world, X + 1, Y + 1, Z), 4, 4, 4))
             if (entity instanceof ItemFrame) entity.remove();
         frames.clear();
         // Order: bottom-left origin, top-left, bottom-right, top-right.
-        for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < columns; x++) for (int y = 0; y < rows; y++) {
             int tileX = X + facing.getModZ() * x, tileZ = Z - facing.getModX() * x;
             world.getBlockAt(tileX - facing.getModX(), Y + y, tileZ - facing.getModZ()).setType(Material.STONE);
             world.getBlockAt(tileX, Y + y, tileZ).setType(Material.AIR);
-            ItemFrame frame = world.spawn(new Location(world, tileX + 0.5, Y + y + 0.5, tileZ + 0.5), ItemFrame.class,
-                    entity -> entity.setFacingDirection(facing, true));
+            Location location = new Location(world, tileX + 0.5, Y + y + 0.5, tileZ + 0.5);
+            ItemFrame frame;
+            if (glow) frame = world.spawn(location, GlowItemFrame.class, entity -> entity.setFacingDirection(facing, true));
+            else frame = world.spawn(location, ItemFrame.class, entity -> entity.setFacingDirection(facing, true));
             frame.setPersistent(true);
             frames.add(frame.getUniqueId());
         }
@@ -221,6 +262,11 @@ public final class RCME2E extends JavaPlugin implements Listener {
     }
 
     private void collect(Player player, String expectedPath) {
+        // Clearing a full inventory can let vanilla pick up the item before this command arrives.
+        for (ItemStack item : player.getInventory().getContents()) {
+            String reference = imagePath(item);
+            if (reference != null && (expectedPath == null || expectedPath.equals(reference))) return;
+        }
         Item found = player.getWorld().getEntitiesByClass(Item.class).stream()
                 .filter(item -> imagePath(item.getItemStack()) != null)
                 .filter(item -> expectedPath == null || expectedPath.equals(imagePath(item.getItemStack())))
@@ -255,25 +301,38 @@ public final class RCME2E extends JavaPlugin implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
+    public void protectHanging(HangingBreakEvent event) {
+        if (event.getEntity().getUniqueId().equals(deniedFrame)) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void observeHanging(HangingBreakEvent event) {
+        if (frames.contains(event.getEntity().getUniqueId())) record("hanging-break", Map.of("uuid", event.getEntity().getUniqueId().toString(), "cause", event.getCause().name(), "cancelled", event.isCancelled()));
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void spawn(ItemSpawnEvent event) {
         if (cancelSpawn && imagePath(event.getEntity().getItemStack()) != null) event.setCancelled(true);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void observeSpawn(ItemSpawnEvent event) {
+        Material type = event.getEntity().getItemStack().getType();
+        if (type == Material.ITEM_FRAME || type == Material.GLOW_ITEM_FRAME)
+            record("frame-drop", Map.of("type", type.name(), "uuid", event.getEntity().getUniqueId().toString()));
         remember(event.getEntity());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void dropped(PlayerDropItemEvent event) {
         Item item = event.getItemDrop();
-        if (imagePath(item.getItemStack()) == null) return;
+        if (containedPaths(item.getItemStack()).isEmpty()) return;
         lastDropped = item.getUniqueId();
         String mode = destruction;
         destruction = "";
         item.setVelocity(new Vector());
         item.setPickupDelay(32767);
-        record("client-drop", Map.of("mode", mode, "entity", item.getEntityId(), "path", imagePath(item.getItemStack())));
+        record("client-drop", Map.of("mode", mode, "entity", item.getEntityId(), "path", containedPaths(item.getItemStack()).get(0), "container", item.getItemStack().getType().name()));
         Bukkit.getScheduler().runTaskLater(this, () -> {
             switch (mode) {
                 case "damage" -> { item.setHealth(1); item.setFireTicks(80); }
@@ -294,7 +353,9 @@ public final class RCME2E extends JavaPlugin implements Listener {
         if (event.getEntity() instanceof Item item) {
             String path = imagePath(item.getItemStack());
             if (path == null) path = itemPaths.get(item.getUniqueId());
-            if (path != null) record("remove", Map.of("cause", event.getCause().name(), "entity", item.getEntityId(), "path", path));
+            List<String> paths = containedPaths(item.getItemStack());
+            if (paths.isEmpty() && path != null) paths = List.of(path);
+            for (String reference : paths) record("remove", Map.of("cause", event.getCause().name(), "entity", item.getEntityId(), "uuid", item.getUniqueId().toString(), "path", reference, "container", item.getItemStack().getType().name()));
             itemPaths.remove(item.getUniqueId());
         }
     }
@@ -303,7 +364,7 @@ public final class RCME2E extends JavaPlugin implements Listener {
     public void pickup(EntityPickupItemEvent event) {
         remember(event.getItem());
         if (imagePath(event.getItem().getItemStack()) != null)
-            record("pickup", Map.of("cancelled", event.isCancelled(), "path", imagePath(event.getItem().getItemStack())));
+            record("pickup", Map.of("cancelled", event.isCancelled(), "path", imagePath(event.getItem().getItemStack()), "uuid", event.getItem().getUniqueId().toString()));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -325,8 +386,32 @@ public final class RCME2E extends JavaPlugin implements Listener {
     }
 
     private void remember(Item item) {
-        String path = imagePath(item.getItemStack());
+        String path = containedPaths(item.getItemStack()).stream().findFirst().orElse(null);
         if (path != null) itemPaths.put(item.getUniqueId(), path);
+    }
+
+    private static List<String> containedPaths(ItemStack item) {
+        List<String> result = new ArrayList<>();
+        if (item == null || item.getType().isAir()) return result;
+        String direct = imagePath(item); if (direct != null) result.add(direct);
+        if (item.getItemMeta() instanceof BundleMeta bundle) for (ItemStack child : bundle.getItems()) result.addAll(containedPaths(child));
+        if (item.getItemMeta() instanceof BlockStateMeta meta && meta.getBlockState() instanceof ShulkerBox box)
+            for (ItemStack child : box.getInventory().getContents()) result.addAll(containedPaths(child));
+        return result;
+    }
+
+    // Read-only observation of public runtime getters; no business method is invoked.
+    private static Map<String, Object> configuration() throws Exception {
+        ClassLoader loader = Bukkit.getPluginManager().getPlugin("ReColorfulMap").getClass().getClassLoader();
+        Class<?> config = Class.forName("cn.lunadeer.reColorfulMap.Configuration", true, loader);
+        Object snapshot = config.getMethod("snapshot").invoke(null);
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String key : List.of("maxFrameX", "maxFrameY", "debug")) result.put(key, snapshot.getClass().getMethod(key).invoke(snapshot));
+        Object economy = snapshot.getClass().getMethod("economy").invoke(snapshot);
+        result.put("economyEnable", economy.getClass().getMethod("enable").invoke(economy));
+        result.put("costPerMap", economy.getClass().getMethod("costPerMap").invoke(economy));
+        result.put("loggerDebug", Class.forName("cn.lunadeer.reColorfulMap.utils.XLogger", true, loader).getMethod("isDebug").invoke(null));
+        return result;
     }
 
     private static String imagePath(ItemStack item) {
@@ -337,6 +422,7 @@ public final class RCME2E extends JavaPlugin implements Listener {
         Map<String, Object> state = new LinkedHashMap<>();
         if (item == null) { state.put("type", "AIR"); return state; }
         state.put("type", item.getType().name()); state.put("amount", item.getAmount());
+        state.put("containedPaths", containedPaths(item));
         String path = imagePath(item); state.put("path", path);
         if (path != null) state.put("fileExists", Files.isRegularFile(getDataFolder().toPath().getParent().resolve("ReColorfulMap").resolve(path)));
         if (item.getItemMeta() instanceof MapMeta meta) {
@@ -356,6 +442,7 @@ public final class RCME2E extends JavaPlugin implements Listener {
             Map<String, Object> state = new LinkedHashMap<>();
             state.put("phase", phase); state.put("error", lastError); state.put("tick", Bukkit.getCurrentTick());
             state.put("facing", facing.name());
+            state.put("configuration", configuration());
             state.put("player", player.getUniqueId().toString()); state.put("world", player.getWorld().getName());
             state.put("worlds", worlds());
             state.put("x", player.getX()); state.put("y", player.getY()); state.put("z", player.getZ());
@@ -375,7 +462,7 @@ public final class RCME2E extends JavaPlugin implements Listener {
             state.put("frames", frameStates);
             List<Map<String, Object>> drops = new ArrayList<>();
             for (Item item : player.getWorld().getEntitiesByClass(Item.class)) {
-                if (imagePath(item.getItemStack()) == null) continue;
+                if (containedPaths(item.getItemStack()).isEmpty()) continue;
                 remember(item);
                 Map<String, Object> drop = new LinkedHashMap<>(itemState(item.getItemStack()));
                 drop.put("entityId", item.getEntityId()); drop.put("uuid", item.getUniqueId().toString()); drops.add(drop);

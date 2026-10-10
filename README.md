@@ -6,9 +6,9 @@
 
 <img src="https://ssl.lunadeer.cn:14437/i/2024/02/21/65d5e0d10b7d5.png" alt="" width="70%">
 
-[![GitHub Repository](https://img.shields.io/badge/SourceCode-GitHub-blue?logo=github)](https://github.com/ColdeZhang/ReColorfulMap)
+[![GitHub Repository](https://img.shields.io/badge/SourceCode-GitHub-blue?logo=github)](https://github.com/LunaDeerMC/ReColorfulMap)
 [![bStats](https://img.shields.io/badge/bStats-Statistics-eacd76?logo=google-analytics)](https://bstats.org/plugin/bukkit/ColorfulMap/21443)
-[![Latest Build](https://img.shields.io/github/v/release/ColdeZhang/ReColorfulMap?label=LatestBuild&logo=github&color=0aa344)](https://github.com/ColdeZhang/ReColorfulMap/releases/latest)
+[![Latest Build](https://img.shields.io/github/v/release/LunaDeerMC/ReColorfulMap?label=LatestBuild&logo=github&color=0aa344)](https://github.com/LunaDeerMC/ReColorfulMap/releases/latest)
 
 [![Hangar](https://img.shields.io/badge/To-Hangar-004ee9)](https://hangar.papermc.io/zhangyuheng/ReColorfulMap)
 [![Modrinth](https://img.shields.io/badge/To-Modrinth-1bd96a)](https://modrinth.com/project/recolorfulmap)
@@ -33,8 +33,10 @@ work.
 - Convert images into image maps;
 - Image scaling;
 - Automatic placement to item frame matrix;
-- Support for consuming money to generate map paintings (requires Vault dependency);
+- Charge once per image tile when generating artwork; retrieval and replacement are free (requires Vault and an economy plugin);
 - Automatic get back maps from item matrix **(new feature)**;
+- Bounded generation queue, cancellation, and durable claims for results completed while offline;
+- Download size, original pixel and timeout limits; reuse native map IDs already discovered during this server run;
 
 ## Version Support
 
@@ -80,12 +82,19 @@ work.
 
 | Function    | Command                         | Permission Node     | Default |
 |-------------|---------------------------------|---------------------|---------|
-| Generate    | `/tomap <image-url> [scalling]` | recolorfulmap.tomap | true    |
-| Reload      | `/reloadColorfulMap`            | recolorfulmap.admin | op      |
-| Clean Temporary Files | `/cleanColorfulMap`    | recolorfulmap.admin | op      |
+| Generate    | `/tomap <image-url> [scale]` | recolorfulmap.tomap | true    |
+| Reload      | `/reloadcolorfulmap`            | recolorfulmap.admin | op      |
+| Clean Temporary Files | `/cleancolorfulmap`    | recolorfulmap.admin | op      |
+| Generation Status / Cancel | `/mapmanage status`, `/mapmanage cancel` | recolorfulmap.manage | true |
+| Pending Maps | `/mapmanage list`, `/mapmanage claim <UUID>` | recolorfulmap.manage | true |
+| Inspect / Recover Delivery | `/mapmanage inspect\|recover\|resolve ...` | recolorfulmap.admin | op |
 
-`/cleanColorfulMap` removes temporary directories left by failed writes or deletions.
+`/cleancolorfulmap` removes temporary directories left by failed writes or deletions.
 Artwork files are deleted when a dropped map item is actually destroyed; placement, retrieval, pickups, and chunk unloads preserve them.
+Results completed while the player is offline remain available through `/mapmanage list` and `claim`.
+The price is `columns × rows × economy.cost-per-map`, charged once when the generated result is first delivered.
+Offline results are charged when claimed. Retrieval, movement and replacement are always free; there is no alternative charging mode.
+See [runtime and recovery documentation (Chinese)](docs/runtime.md) for administrator recovery commands and interrupted deliveries.
 
 ### Upgrading from ColorfulMap 2.3
 
@@ -113,33 +122,49 @@ The repository's previous PDC image-byte storage is discontinued and has no migr
 
 ```yaml
 # Do not modify this value.
-version: 2
+version: 3
 # The maximum size of item frame matrix.
 # 32 x 18 means image can not be larger than 4096 x 2304 pixels.
 # Don't set this value too large, it may cause lag.
 max-frame-x: 32
 max-frame-y: 18
-# Language of the plugin, see others in the plugins/FurnitureCore/languages folder.
+# Language filename in plugins/ReColorfulMap/languages, without .yml.
 language: en_us
 # Enable economy system. (Require Vault and an economy plugin)
-# If true, players need to pay for each map they create.
-# This may prevent players from abusing usage of the plugin.
+# Charge once per tile on first delivery of the generated artwork.
 economy:
    enable: false
    cost-per-map: 100.0
 # The whitelist of image url address, use this to prevent players from using inappropriate images.
 # Leave it empty to allow all addresses.
-address-white-list:
-   - ''
+address-white-list: []
+# Original image limits, checked before decoding and resizing.
+download:
+   max-bytes: 33554432
+   max-pixels: 16000000
+   connect-timeout-millis: 10000
+   read-timeout-millis: 15000
+   total-timeout-millis: 60000
+   max-redirects: 5
+# Global generation workers and waiting capacity; restart required. Zero means no waiting queue.
+generation:
+   workers: 2
+   queue-capacity: 16
 # Debug mode, if report bugs turn this on.
-debug: true
+debug: false
 ```
+
+Existing configuration files are preserved; missing new fields use the defaults above.
+Invalid configuration or language files leave the previous valid settings active on reload and prevent initial startup.
+All settings except worker count and queue capacity support reload; running jobs keep their original settings.
+Whitelist rules match complete hosts, ports and path segments, and are checked on every redirect.
+For example, `https://images.example.com/art` permits images under that path, but excludes similar domains and `/artwork`.
 
 ## Support
 
 Mail: [zhangyuheng@lunadeer.cn](mailto:zhangyuheng@lunadeer.cn)
 
-GitHub: [Issues](https://github.com/ColdeZhang/ReColorfulMap/issues)
+GitHub: [Issues](https://github.com/LunaDeerMC/ReColorfulMap/issues)
 
 QQ群：309428300
 

@@ -8,6 +8,10 @@ jdk_dir="$1"
 api_jar="$2"
 dependency_server_dir="$3"
 server_dir="$4"
+if [[ ! -f "${server_dir}/.recolorfulmap-e2e.json" ]]; then
+    echo "Refusing to deploy the test-only auto-op plugin outside a marked disposable E2E server." >&2
+    exit 2
+fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 build_dir="${server_dir}/.rcmfolia-build"
 mkdir -p "${build_dir}/classes" "${server_dir}/plugins"

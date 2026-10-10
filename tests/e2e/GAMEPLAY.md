@@ -78,3 +78,58 @@ The expanded fixture reproduces the old data format using Paper APIs; the separa
 its source items. Reports identify these two provenance paths separately.
 
 No test helper or protocol dependency is packaged into the production plugin JAR.
+
+## Optimization regressions
+
+The additional optimization driver requires the deterministic test Vault provider:
+
+```sh
+bash tests/e2e/vault/build-harness.sh /path/to/jdk25 /path/to/paper-api.jar /path/to/VaultAPI-1.7.jar /path/to/disposable/server
+RCM_E2E_REPORT=/path/to/optimization-features.json node tests/e2e/run-optimizations.js before-restart
+python3 tests/e2e/paper_server.py --root /path/to/disposable stop
+python3 tests/e2e/paper_server.py --root /path/to/disposable start
+RCM_E2E_REPORT=/path/to/optimization-features.json node tests/e2e/run-optimizations.js after-restart
+```
+
+The provider is named `Vault`, embeds only the public Vault economy API and
+registers an `Economy` service through Bukkit's real `ServicesManager`. Production
+code performs its usual balance/withdraw/refund calls; the provider writes an
+independent transaction log. Its balance is deterministic, and resets on server
+startup. Never install this provider on a real server.
+
+The driver temporarily enables a price of 10.5 per tile, saves the previous
+configuration under the test helper directory, and restores it at the end of the
+second phase. It checks exact MapView ID reuse across repeated whole-wall
+retrieval, generation-only charging, failed download/no charge, ambiguous delivery
+freezing without duplicate charges or reissue, insufficient-funds recovery, invalid YAML
+preservation, live debug reload, all 136 tile canvases over the protocol,
+ordinary/glowing-frame support-block destruction with protection/rollback checks,
+shulker/bundle/nested-container destruction, cancellation and offline completion.
+The server is then stopped and restarted before claiming the offline artwork;
+repeated claims must neither duplicate items nor charge again. The next boot
+disables charging: the previous pending quote must remain payable while a new
+artwork is generated for free. Server state
+inspection only reads public configuration getters and Bukkit APIs.
+
+All drivers support `RCM_E2E_REPORT` to preserve earlier reports.
+`run-after-migration.js` additionally accepts `RCM_E2E_BASELINE` for the first
+phase pixel reference. The Folia smoke uses `FOLIA_E2E_REPORT` for both restart
+phases. A recovered entity is identified by its UUID and actual pickup event,
+not by a newly allocated map ID: ID reuse is the expected production behavior.
+
+When preserving evidence across a test-observer correction,
+`RCM_E2E_RESUME_CONTAINERS=1` resumes only the unfinished container/cancellation/
+offline cases from an existing same-JAR report. Prior results, transactions,
+messages and the failure reason are kept as report segments. Normal clean runs
+do not need this flag.
+
+The deterministic images are checked only after every expected map has a complete
+nonblank canvas. Paper normally retries an initially blank lazy-rendered frame
+on a later map-update interval; a fixed short delay is not a rendering oracle.
+No driver calls `Player.sendMap` to force refreshes.
+
+`run-original-upgrade.js` can additionally reopen the saved world produced by the
+actual old ColorfulMap 2.3 plugin (the earlier upgrade fixture), verify all original
+PNG hashes and container references, then retrieve/re-place its existing wall
+without recreating or clearing that fixture. See the script's environment
+variables for its root and report paths.

@@ -13,6 +13,7 @@ const root = path.join(server, 'plugins/RCME2E')
 const read = () => JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8'))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const folder = image => path.join(server, 'plugins/ReColorfulMap', image.split('/').slice(0, 2).join('/'))
+const reportFile = process.env.RCM_E2E_REPORT || path.join(server, '../restart-extended-report.json')
 const results = []
 async function until (predicate, description, timeout = 15000) {
   const end = Date.now() + timeout
@@ -91,9 +92,9 @@ async function main () {
 
     await command('setup'); await command('legacy-fixture')
     passed('expanded legacy-format fixture persisted through real Paper APIs for offline migration')
-    fs.writeFileSync(path.join(server, '../restart-extended-report.json'), JSON.stringify({ status: 'passed', pluginSha256, results, state: read(), messages }, null, 2))
+    fs.writeFileSync(reportFile, JSON.stringify({ status: 'passed', pluginSha256, results, state: read(), messages }, null, 2))
   } catch (error) {
-    fs.writeFileSync(path.join(server, '../restart-extended-report.json'), JSON.stringify({ status: 'failed', pluginSha256, error: error.stack, results, state: read(), messages }, null, 2))
+    fs.writeFileSync(reportFile, JSON.stringify({ status: 'failed', pluginSha256, error: error.stack, results, state: read(), messages }, null, 2))
     throw error
   } finally { bot.close(); imageServer.close() }
 }

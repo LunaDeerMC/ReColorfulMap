@@ -8,7 +8,7 @@ const { RcmBot } = require('../client/bot')
 
 const root = process.env.FOLIA_E2E_ROOT || '/tmp/recolorfulmap-folia-e2e'
 const stateFile = path.join(root, 'server/plugins/RCMFoliaE2E/state.json')
-const reportFile = path.join(root, 'results.json')
+const reportFile = process.env.FOLIA_E2E_REPORT || path.join(root, 'results.json')
 const phase = process.argv[2]
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -101,10 +101,32 @@ async function main () {
       await until(() => state()?.inventory.some(row => row.path === reference.path) &&
         state()?.events.some(row => row.event === 'pickup'), 'real pickup')
       assert.ok(fs.existsSync(pngPath(reference.path)), 'pickup preserves artwork')
-      const report = { platform: 'Folia 26.2 build 7', jarSha256, phase, reference, image,
+      // Exercise the new wall service and shared MapView registry on real Folia owner threads.
+      bot.command('rcmfolia equip')
+      bot.command('rcmfolia wall')
+      await until(() => state()?.frames?.length === 4, 'owner-safe Folia wall fixture')
+      let tileIds
+      for (let cycle = 0; cycle < 2; cycle++) {
+        bot.command('rcmfolia teleport-frame 0'); await pause(400)
+        bot.interact(state().frames[0].entityId)
+        await until(() => state()?.frames?.every(frame => frame.path), 'Folia whole-wall placement')
+        const ids = state().frames.map(frame => frame.mapId)
+        if (tileIds) assert.deepEqual(ids, tileIds, 'Folia must reuse tile IDs')
+        tileIds = ids
+        await until(() => tileIds.every(id => pixels.get(id)?.full && new Set(pixels.get(id).bytes).size > 8), 'Folia four-tile network pixels')
+        bot.command('rcmfolia teleport-frame 3'); await pause(400)
+        bot.attack(state().frames[3].entityId)
+        await until(() => state()?.frames?.every(frame => !frame.path), 'Folia non-origin whole-wall retrieval')
+        bot.command('rcmfolia collect')
+        await until(() => state()?.inventory?.some(item => item.path === reference.path), 'Folia recovered map pickup')
+        assert.equal(state().inventory.find(item => item.path === reference.path).mapId, reference.mapId)
+        bot.command('rcmfolia equip')
+      }
+      const report = { platform: 'Folia 26.2 build 7', jarSha256, phase, reference, image, tileIds,
         assertions: ['real login', 'real /tomap', 'PDC PNG reference', '128x128 client pixels',
           'success notification received', 'validation warning received', 'download failure notification received',
-          'drop preserves files', 'pickup preserves files'], messages, events: state().events }
+          'drop preserves files', 'pickup preserves files', 'owner-safe whole-wall placement',
+          'four-tile network pixels', 'non-origin whole-wall retrieval', 'repeated wall/thumbnail map ID reuse'], messages, events: state().events }
       fs.writeFileSync(reportFile, JSON.stringify(report, null, 2) + '\n')
       console.log(JSON.stringify({ success: true, phase, reference, image }))
     } else {

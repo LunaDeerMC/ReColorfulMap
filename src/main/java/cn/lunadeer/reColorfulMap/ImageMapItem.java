@@ -5,7 +5,6 @@ import cn.lunadeer.reColorfulMap.storage.MapStorage.Artwork;
 import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
 import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationPart;
 import net.kyori.adventure.text.Component;
-import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.inventory.ItemStack;
@@ -34,7 +33,7 @@ public class ImageMapItem extends ItemStack {
 
     /** Called on the server/entity thread after the artwork files have been committed. */
     public ImageMapItem(World world, Artwork artwork) throws IOException {
-        this(world, artwork, ReColorfulMap.getInstance().getMapStorage().read(ImageReference.thumbnail(artwork.id())));
+        this(world, artwork, null);
     }
 
     /** All PNG writes finish before an item referencing them is created. */
@@ -45,17 +44,12 @@ public class ImageMapItem extends ItemStack {
         }
         this.world = world;
         this.artwork = artwork;
-        MapStorage storage = ReColorfulMap.getInstance().getMapStorage();
         ImageReference reference = ImageReference.thumbnail(artwork.id());
-        MapView view = Bukkit.createMap(world);
+        MapView view = ReColorfulMap.getInstance().getMapViewRegistry().getOrCreate(world, reference, thumbnail);
         MapMeta meta = (MapMeta) getItemMeta();
         meta.setMapView(view);
         MapItemData.setReference(meta, reference);
         meta.lore(List.of(Component.text("size: " + artwork.columns() + "x" + artwork.rows())));
-        for (var renderer : view.getRenderers()) {
-            view.removeRenderer(renderer);
-        }
-        view.addRenderer(new ImageRenderer(storage, reference, thumbnail));
         setItemMeta(meta);
     }
 
@@ -65,7 +59,8 @@ public class ImageMapItem extends ItemStack {
         if (!reference.thumbnail()) {
             throw new IOException("This map is an image tile, not a whole artwork");
         }
-        this.artwork = ReColorfulMap.getInstance().getMapStorage().artwork(reference.artwork());
+        this.artwork = ReColorfulMap.getInstance().getMapStorage().cachedArtwork(reference.artwork())
+                .orElseThrow(() -> new IOException("Artwork metadata has not been loaded yet"));
         MapView view = ((MapMeta) mapItem.getItemMeta()).getMapView();
         this.world = view == null ? null : view.getWorld();
     }

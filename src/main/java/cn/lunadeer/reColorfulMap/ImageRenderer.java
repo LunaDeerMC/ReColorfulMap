@@ -24,7 +24,9 @@ public class ImageRenderer extends MapRenderer {
         public String imageTooLarge = "image (%d x %d) is too large.";
     }
 
-    // 128 RGBA map images use about 8 MiB; map aliases share the same cache entry.
+    // Reads reserve one of 128 slots (about 8 MiB) until a renderer consumes the
+    // pixels. Large walls therefore render in batches without repeatedly decoding tiles.
+    // Map aliases share entries; each native canvas keeps its own completed pixels.
     private static final ImageCache IMAGES = new ImageCache(128, Scheduler::runTaskAsync,
             (reference, error) -> XLogger.warn("Cannot load map image %s: %s", reference.path(), error.getMessage()));
 
@@ -52,6 +54,10 @@ public class ImageRenderer extends MapRenderer {
     public ImageRenderer(MapStorage storage, ImageReference reference, BufferedImage image) {
         this(storage, reference);
         IMAGES.put(storage, reference, image);
+    }
+
+    public static void clearCache(MapStorage storage) {
+        IMAGES.clear(storage);
     }
 
     public boolean matches(MapStorage store, ImageReference image) {

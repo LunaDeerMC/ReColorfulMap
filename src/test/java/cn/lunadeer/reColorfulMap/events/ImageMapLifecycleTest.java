@@ -3,6 +3,8 @@ package cn.lunadeer.reColorfulMap.events;
 import cn.lunadeer.reColorfulMap.Configuration;
 import cn.lunadeer.reColorfulMap.LegacyMapFixture;
 import cn.lunadeer.reColorfulMap.MapItemData;
+import cn.lunadeer.reColorfulMap.MapViewRegistry;
+import cn.lunadeer.reColorfulMap.services.ArtworkWallService;
 import cn.lunadeer.reColorfulMap.ReColorfulMap;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.utils.Notification;
@@ -10,6 +12,8 @@ import cn.lunadeer.reColorfulMap.utils.Scheduler;
 import cn.lunadeer.reColorfulMap.utils.VaultConnect.VaultConnect;
 import cn.lunadeer.reColorfulMap.utils.XLogger;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
+import org.bukkit.GameRule;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -17,11 +21,13 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
+import org.bukkit.entity.GlowItemFrame;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.hanging.HangingBreakEvent;
+import org.bukkit.event.hanging.HangingBreakByEntityEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemFactory;
@@ -88,6 +94,7 @@ class ImageMapLifecycleTest {
     private Configuration.Economy previousEconomyConfiguration;
     private VaultConnect previousEconomy;
     private ItemFactory factory;
+    private ArtworkWallService walls;
     private final List<String> errors = new ArrayList<>();
 
     @BeforeEach
@@ -95,6 +102,9 @@ class ImageMapLifecycleTest {
         storage = spy(LegacyMapFixture.copyTo(directory));
         ReColorfulMap plugin = mock(ReColorfulMap.class);
         when(plugin.getMapStorage()).thenReturn(storage);
+        when(plugin.getMapViewRegistry()).thenReturn(new MapViewRegistry(storage));
+        walls = new ArtworkWallService(plugin, Scheduler::runTaskAsync);
+        when(plugin.getArtworkWallService()).thenReturn(walls);
         pluginAccess = mockStatic(ReColorfulMap.class);
         pluginAccess.when(ReColorfulMap::getInstance).thenReturn(plugin);
         bukkit = mockStatic(Bukkit.class);
@@ -114,6 +124,10 @@ class ImageMapLifecycleTest {
                     call.getArgument(1, Runnable.class).run();
                     return null;
                 });
+        scheduler.when(() -> Scheduler.runTask(any(Runnable.class))).thenAnswer(call -> {
+            call.getArgument(0, Runnable.class).run();
+            return null;
+        });
         pluginManager = mock(PluginManager.class);
         bukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
         // Exercise Bukkit's real ItemStack copy constructor and independent PDC metadata clones.
@@ -126,6 +140,7 @@ class ImageMapLifecycleTest {
         when(factory.getItemMeta(Material.FILLED_MAP)).thenAnswer(call -> emptyMapMeta());
         world = mock(World.class);
         when(world.getName()).thenReturn("world");
+        when(world.getUID()).thenReturn(UUID.randomUUID());
         when(world.isChunkLoaded(anyInt(), anyInt())).thenReturn(true);
         AtomicInteger nextMapId = new AtomicInteger(300);
         bukkit.when(() -> Bukkit.createMap(world)).thenAnswer(call -> {
@@ -157,6 +172,7 @@ class ImageMapLifecycleTest {
 
     @AfterEach
     void resetGlobalServices() {
+        walls.close();
         Configuration.economy = previousEconomyConfiguration;
         VaultConnect.instance = previousEconomy;
         scheduler.close();
@@ -220,7 +236,7 @@ class ImageMapLifecycleTest {
 
         assertTrue(event.isCancelled());
         verify(storage).read(MapStorage.ImageReference.tile(LegacyMapFixture.ARTWORK, 1, 1));
-        verify(economy).getBalance(player);
+        verify(economy, never()).getBalance(player);
         notifications.verify(() -> Notification.error(eq(player), contains("Invalid PNG image")));
         assertUnchanged();
     }
@@ -262,7 +278,7 @@ class ImageMapLifecycleTest {
 
         assertTrue(event.isCancelled());
         assertTrue(errors.isEmpty(), errors.toString());
-        verify(economy).withdrawPlayer(player, 600d);
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
         ArgumentCaptor<ItemStack> remaining = ArgumentCaptor.forClass(ItemStack.class);
         verify(inventory).setItemInMainHand(remaining.capture());
         assertEquals(1, remaining.getValue().getAmount());
@@ -278,7 +294,7 @@ class ImageMapLifecycleTest {
     }
 
     @Test
-    void frameFailureAfterPaymentRestoresFramesAndRefundsPlayer() {
+    void frameFailureRestoresFramesWithoutEverChargingPlayer() {
         AtomicBoolean failed = new AtomicBoolean();
         doAnswer(call -> {
             if (!failed.getAndSet(true)) {
@@ -291,8 +307,8 @@ class ImageMapLifecycleTest {
         new ImageMapEvent().putImageMapsOnItemFrame(event);
 
         assertTrue(event.isCancelled());
-        verify(economy).withdrawPlayer(player, 600d);
-        verify(economy).depositPlayer(player, 600d);
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
+        verify(economy, never()).depositPlayer(any(Player.class), anyDouble());
         verify(inventory, never()).setItemInMainHand(any(ItemStack.class));
         for (ItemFrame frame : frames) {
             ArgumentCaptor<ItemStack> changes = ArgumentCaptor.forClass(ItemStack.class);
@@ -323,7 +339,7 @@ class ImageMapLifecycleTest {
         playerTasks.remove(0).run(); // Create tagged maps and place them on the owning thread.
 
         assertTrue(workers.isEmpty(), "PDC references need no separate index commit");
-        verify(economy).withdrawPlayer(player, 600d);
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
         for (ItemFrame frame : frames) {
             ArgumentCaptor<ItemStack> placed = ArgumentCaptor.forClass(ItemStack.class);
             verify(frame).setItem(placed.capture(), eq(false));
@@ -379,8 +395,8 @@ class ImageMapLifecycleTest {
     void artworkDeletedDuringFinalProtectionChecksCannotChargePlayerOrPlaceTiles() throws Exception {
         AtomicInteger probes = new AtomicInteger();
         doAnswer(call -> {
-            // Six preflight probes run before decoding; the next probe is immediately before payment.
-            if (probes.incrementAndGet() == 7) {
+            // Protection plugins can delete a copied source before the transaction commits.
+            if (probes.incrementAndGet() == 1) {
                 storage.deleteArtwork(LegacyMapFixture.ARTWORK);
             }
             return null;
@@ -397,20 +413,17 @@ class ImageMapLifecycleTest {
     }
 
     @Test
-    void artworkDeletedDuringPaymentIsRefundedWithoutConsumingItemOrChangingFrames() throws Exception {
-        doAnswer(call -> {
-            storage.deleteArtwork(LegacyMapFixture.ARTWORK);
-            return null;
-        }).when(economy).withdrawPlayer(player, 600d);
-        PlayerInteractEntityEvent event = placement();
+    void placementIgnoresInsufficientEconomyBalanceBecauseOnlyGenerationIsCharged() throws Exception {
+        when(economy.getBalance(player)).thenReturn(0d);
+        when(economy.economyAvailable()).thenReturn(false);
 
-        new ImageMapEvent().putImageMapsOnItemFrame(event);
+        new ImageMapEvent().putImageMapsOnItemFrame(placement());
 
-        assertTrue(event.isCancelled());
-        verify(economy).withdrawPlayer(player, 600d);
-        verify(economy).depositPlayer(player, 600d);
-        assertNoFrameChangesOrItemConsumption();
-        notifications.verify(() -> Notification.error(eq(player), contains("Image files are missing or corrupted")));
+        assertTrue(errors.isEmpty(), errors.toString());
+        verify(economy, never()).getBalance(any(Player.class));
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
+        verify(inventory).setItemInMainHand(any(ItemStack.class));
+        for (ItemFrame frame : frames) verify(frame).setItem(any(ItemStack.class), eq(false));
     }
 
     @Test
@@ -430,6 +443,7 @@ class ImageMapLifecycleTest {
                 EntityDamageEvent.DamageCause.ENTITY_ATTACK, 1d);
         ImageMapEvent listener = new ImageMapEvent();
 
+        storage.artwork(LegacyMapFixture.ARTWORK);
         listener.breakImageMapsFromItemFrame(pickup);
 
         assertTrue(pickup.isCancelled());
@@ -469,14 +483,17 @@ class ImageMapLifecycleTest {
         // Click the upper-right tile instead of the old implementation's special origin frame.
         HangingBreakEvent event = new HangingBreakEvent(frames.get(2), HangingBreakEvent.RemoveCause.PHYSICS);
 
+        storage.artwork(LegacyMapFixture.ARTWORK);
         new ImageMapEvent().itemFrameBroken(event);
 
-        assertFalse(event.isCancelled(), "After recovering the map, vanilla may break the empty frame");
+        assertTrue(event.isCancelled(), "Async pickup owns the empty-frame removal");
+        verify(frames.get(2)).remove();
         logger.verifyNoInteractions();
         ArgumentCaptor<ItemStack> recovered = ArgumentCaptor.forClass(ItemStack.class);
-        verify(world).dropItemNaturally(eq(frames.get(2).getLocation()), recovered.capture());
+        verify(world, times(2)).dropItemNaturally(eq(frames.get(2).getLocation()), recovered.capture());
         assertEquals(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK),
-                MapItemData.requireReference(recovered.getValue()));
+                MapItemData.requireReference(recovered.getAllValues().get(0)));
+        assertEquals(Material.ITEM_FRAME, recovered.getAllValues().get(1).getType());
         for (ItemFrame frame : frames) {
             ArgumentCaptor<ItemStack> cleared = ArgumentCaptor.forClass(ItemStack.class);
             verify(frame).setItem(cleared.capture(), eq(false));
@@ -499,6 +516,7 @@ class ImageMapLifecycleTest {
         when(frames.get(1).getItem()).thenReturn(otherArtwork);
         HangingBreakEvent event = new HangingBreakEvent(frames.get(5), HangingBreakEvent.RemoveCause.PHYSICS);
 
+        storage.artwork(LegacyMapFixture.ARTWORK);
         new ImageMapEvent().itemFrameBroken(event);
 
         assertFalse(event.isCancelled(), "A loose image tile must remain removable by vanilla");
@@ -520,6 +538,7 @@ class ImageMapLifecycleTest {
         when(world.isChunkLoaded(1, 1)).thenReturn(false);
         HangingBreakEvent event = new HangingBreakEvent(frames.get(2), HangingBreakEvent.RemoveCause.PHYSICS);
 
+        storage.artwork(LegacyMapFixture.ARTWORK);
         new ImageMapEvent().itemFrameBroken(event);
 
         assertTrue(event.isCancelled(), "An unavailable neighbor must not be mistaken for a missing artwork tile");
@@ -528,6 +547,278 @@ class ImageMapLifecycleTest {
         verify(world, never()).dropItemNaturally(any(Location.class), any(ItemStack.class));
         verify(world, never()).getChunkAt(anyInt(), anyInt());
         verify(world, never()).loadChunk(anyInt(), anyInt());
+    }
+
+    @Test
+    void pickupReadsThumbnailOnlyOnWorkerAndCommitsOnOwnerThread() throws Exception {
+        fillWall();
+        List<Runnable> workers = new ArrayList<>();
+        List<Runnable> ownerTasks = new ArrayList<>();
+        queueScheduler(workers, ownerTasks);
+        org.mockito.Mockito.clearInvocations(storage);
+
+        new ImageMapEvent().breakImageMapsFromItemFrame(damagePickup());
+
+        verify(storage, never()).artwork(any());
+        verify(storage, never()).read(any());
+        assertNoFrameChangesOrItemConsumption();
+        assertEquals(1, workers.size());
+        workers.remove(0).run();
+        verify(storage).read(MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK));
+        assertNoFrameChangesOrItemConsumption();
+        assertEquals(1, ownerTasks.size());
+        ownerTasks.remove(0).run();
+        verify(world).dropItemNaturally(any(Location.class), any(ItemStack.class));
+        assertTrue(errors.isEmpty(), errors.toString());
+    }
+
+    @Test
+    void changingWallWhileThumbnailIsReadCannotReplaceAnotherItem() throws Exception {
+        fillWall();
+        List<Runnable> workers = new ArrayList<>();
+        List<Runnable> ownerTasks = new ArrayList<>();
+        queueScheduler(workers, ownerTasks);
+        new ImageMapEvent().breakImageMapsFromItemFrame(damagePickup());
+        workers.remove(0).run();
+        when(frames.get(1).getItem()).thenReturn(new ItemStack(Material.DIAMOND));
+
+        ownerTasks.remove(0).run();
+
+        assertNoFrameChangesOrItemConsumption();
+        verify(world, never()).dropItemNaturally(any(Location.class), any(ItemStack.class));
+        assertArtworkFilesRemain();
+    }
+
+    @Test
+    void deletedArtworkAndShutdownCannotCommitPreparedPickup() throws Exception {
+        fillWall();
+        List<Runnable> workers = new ArrayList<>();
+        List<Runnable> ownerTasks = new ArrayList<>();
+        queueScheduler(workers, ownerTasks);
+        new ImageMapEvent().breakImageMapsFromItemFrame(damagePickup());
+        workers.remove(0).run();
+        storage.deleteArtwork(LegacyMapFixture.ARTWORK);
+        walls.close();
+
+        ownerTasks.remove(0).run();
+
+        assertNoFrameChangesOrItemConsumption();
+        verify(world, never()).dropItemNaturally(any(Location.class), any(ItemStack.class));
+    }
+
+    @Test
+    void repeatedPickupAndPlacementReusesAllNativeMapIdsAndValidatesTilesOnlyOnce() throws Exception {
+        fillWall();
+        for (int i = 0; i < frames.size(); i++) {
+            AtomicReference<ItemStack> state = new AtomicReference<>(frames.get(i).getItem());
+            ItemFrame frame = frames.get(i);
+            when(frame.getItem()).thenAnswer(call -> state.get());
+            doAnswer(call -> { state.set(call.getArgument(0)); return null; })
+                    .when(frame).setItem(any(ItemStack.class), eq(false));
+        }
+        AtomicReference<ItemStack> recovered = new AtomicReference<>();
+        Item dropped = mock(Item.class);
+        when(dropped.isValid()).thenReturn(true);
+        when(world.dropItemNaturally(any(Location.class), any(ItemStack.class))).thenAnswer(call -> {
+            recovered.set(call.getArgument(1));
+            return dropped;
+        });
+        ImageMapEvent listener = new ImageMapEvent();
+        for (int round = 0; round < 10; round++) {
+            listener.breakImageMapsFromItemFrame(damagePickup());
+            when(inventory.getItemInMainHand()).thenReturn(recovered.get());
+            listener.putImageMapsOnItemFrame(placement());
+        }
+
+        assertTrue(errors.isEmpty(), errors.toString());
+        bukkit.verify(() -> Bukkit.createMap(world), times(1)); // only the previously unseen thumbnail
+        for (int x = 0; x < 3; x++) for (int y = 0; y < 2; y++) {
+            verify(storage, times(1)).read(MapStorage.ImageReference.tile(LegacyMapFixture.ARTWORK, x, y));
+            assertEquals(124 + y * 3 + x, ((MapMeta) frames.get(y * 3 + x).getItem().getItemMeta()).getMapView().getId());
+        }
+        verify(economy, never()).withdrawPlayer(any(Player.class), anyDouble());
+        assertArtworkFilesRemain();
+    }
+
+    @Test
+    void unknownMetadataDoesNotScanDirectoriesOnEventThreadOrSplitWall() throws Exception {
+        for (int i = 0; i < frames.size(); i++) {
+            ItemStack tile = imageMap(124 + i);
+            when(frames.get(i).getItem()).thenReturn(tile);
+        }
+        List<Runnable> workers = new ArrayList<>();
+        List<Runnable> ownerTasks = new ArrayList<>();
+        queueScheduler(workers, ownerTasks);
+        EntityDamageByEntityEvent event = damagePickup();
+
+        new ImageMapEvent().breakImageMapsFromItemFrame(event);
+
+        assertTrue(event.isCancelled());
+        verify(storage, never()).artwork(any());
+        assertNoFrameChangesOrItemConsumption();
+        assertEquals(1, workers.size());
+        workers.remove(0).run();
+        assertTrue(storage.cachedArtwork(LegacyMapFixture.ARTWORK).isPresent());
+        verify(storage, never()).read(any());
+    }
+
+    @Test
+    void cancelledEmptyFrameDropRollsBackTheWholeRecovery() throws Exception {
+        fillWall();
+        Item whole = mock(Item.class);
+        when(whole.isValid()).thenReturn(true);
+        Item rejectedFrame = mock(Item.class);
+        when(rejectedFrame.isValid()).thenReturn(false);
+        when(world.dropItemNaturally(any(Location.class), any(ItemStack.class))).thenReturn(whole, rejectedFrame);
+        HangingBreakEvent event = new HangingBreakEvent(frames.get(2), HangingBreakEvent.RemoveCause.EXPLOSION);
+
+        new ImageMapEvent().itemFrameBroken(event);
+
+        assertTrue(event.isCancelled());
+        verify(frames.get(2), never()).remove();
+        verify(whole).remove();
+        for (int i = 0; i < frames.size(); i++) {
+            ArgumentCaptor<ItemStack> changes = ArgumentCaptor.forClass(ItemStack.class);
+            verify(frames.get(i), times(2)).setItem(changes.capture(), eq(false));
+            assertEquals(MapItemData.reference(imageMap(124 + i)), MapItemData.reference(changes.getAllValues().get(1)));
+        }
+        assertArtworkFilesRemain();
+    }
+
+    @Test
+    void creativeHangingBreakRemovesFrameWithoutCreatingAFrameDrop() throws Exception {
+        fillWall();
+        when(player.getGameMode()).thenReturn(GameMode.CREATIVE);
+        HangingBreakEvent event = new HangingBreakByEntityEvent(frames.get(2), player, HangingBreakEvent.RemoveCause.ENTITY);
+
+        new ImageMapEvent().itemFrameBroken(event);
+
+        assertTrue(event.isCancelled());
+        verify(frames.get(2)).remove();
+        ArgumentCaptor<ItemStack> drop = ArgumentCaptor.forClass(ItemStack.class);
+        verify(world).dropItemNaturally(any(Location.class), drop.capture());
+        assertTrue(MapItemData.reference(drop.getValue()).isPresent());
+    }
+
+    @Test
+    void disabledEntityDropsStillRecoversArtworkButDoesNotDropTheEmptyFrame() throws Exception {
+        fillWall();
+        when(world.getGameRuleValue(GameRule.DO_ENTITY_DROPS)).thenReturn(false);
+        HangingBreakEvent event = new HangingBreakEvent(frames.get(2), HangingBreakEvent.RemoveCause.PHYSICS);
+
+        new ImageMapEvent().itemFrameBroken(event);
+
+        verify(frames.get(2)).remove();
+        verify(world).dropItemNaturally(any(Location.class), any(ItemStack.class));
+    }
+
+    @Test
+    void glowFrameRecoveryPreservesFrameMaterial() throws Exception {
+        fillWall();
+        ItemFrame previous = frames.get(2);
+        GlowItemFrame glow = mock(GlowItemFrame.class);
+        when(glow.getWorld()).thenReturn(world);
+        when(glow.getLocation()).thenAnswer(call -> previous.getLocation());
+        when(glow.getFacing()).thenReturn(BlockFace.NORTH);
+        when(glow.isValid()).thenReturn(true);
+        ItemStack tile = previous.getItem();
+        when(glow.getItem()).thenReturn(tile);
+        frames.set(2, glow);
+        when(world.getNearbyEntities(any(Location.class), anyDouble(), anyDouble(), anyDouble()))
+                .thenReturn(new ArrayList<Entity>(frames));
+
+        new ImageMapEvent().itemFrameBroken(new HangingBreakEvent(glow, HangingBreakEvent.RemoveCause.EXPLOSION));
+
+        ArgumentCaptor<ItemStack> drops = ArgumentCaptor.forClass(ItemStack.class);
+        verify(world, times(2)).dropItemNaturally(any(Location.class), drops.capture());
+        assertEquals(Material.GLOW_ITEM_FRAME, drops.getAllValues().get(1).getType());
+        verify(glow).remove();
+        assertArtworkFilesRemain();
+    }
+
+    @Test
+    void rejectedWholeMapDropRestoresFramesAndLeavesClickedFrameInPlace() throws Exception {
+        fillWall();
+        Item rejected = mock(Item.class);
+        when(rejected.isValid()).thenReturn(false);
+        when(world.dropItemNaturally(any(Location.class), any(ItemStack.class))).thenReturn(rejected);
+
+        new ImageMapEvent().itemFrameBroken(new HangingBreakEvent(frames.get(2), HangingBreakEvent.RemoveCause.PHYSICS));
+
+        verify(frames.get(2), never()).remove();
+        for (ItemFrame frame : frames) verify(frame, times(2)).setItem(any(ItemStack.class), eq(false));
+        verify(world).dropItemNaturally(any(Location.class), any(ItemStack.class));
+        assertArtworkFilesRemain();
+    }
+
+    @Test
+    void unavailableLegacyMetadataDoesNotPermanentlyTrapLooseTiles() throws Exception {
+        for (int i = 0; i < frames.size(); i++) {
+            ItemStack tile = imageMap(124 + i);
+            when(frames.get(i).getItem()).thenReturn(tile);
+        }
+        Files.delete(directory.resolve("maps/" + LegacyMapFixture.ARTWORK + "/1_1.png"));
+        ImageMapEvent listener = new ImageMapEvent();
+        EntityDamageByEntityEvent first = damagePickup();
+        listener.breakImageMapsFromItemFrame(first);
+        assertTrue(first.isCancelled(), "The first lookup waits for background metadata preparation");
+
+        EntityDamageByEntityEvent second = damagePickup();
+        listener.breakImageMapsFromItemFrame(second);
+
+        assertFalse(second.isCancelled(), "After confirming missing metadata, vanilla can remove the loose tile");
+        assertNoFrameChangesOrItemConsumption();
+    }
+
+    @Test
+    void wallAdmissionRemainsBoundedUntilOwnerCallbacksRetire() throws Exception {
+        List<Runnable> workers = new ArrayList<>();
+        List<Runnable> ownerTasks = new ArrayList<>();
+        List<Runnable> retired = new ArrayList<>();
+        queueScheduler(workers, ownerTasks);
+        scheduler.when(() -> Scheduler.runTask(any(Player.class), any(Runnable.class), any(Runnable.class)))
+                .thenAnswer(call -> {
+                    ownerTasks.add(call.getArgument(1));
+                    retired.add(call.getArgument(2));
+                    return null;
+                });
+        for (int i = 0; i < 64; i++) {
+            Player other = mock(Player.class);
+            when(other.getUniqueId()).thenReturn(UUID.randomUUID());
+            when(other.getWorld()).thenReturn(world);
+            when(other.getInventory()).thenReturn(inventory);
+            walls.place(other, frames.get(3), held);
+        }
+        assertEquals(64, workers.size());
+        List<Runnable> admitted = List.copyOf(workers);
+        workers.clear();
+        admitted.forEach(Runnable::run);
+        assertEquals(64, ownerTasks.size());
+
+        walls.place(player, frames.get(3), held);
+        assertTrue(workers.isEmpty(), "Completing background work must not release operation admission");
+        notifications.verify(() -> Notification.error(eq(player), contains("Too many image wall operations")));
+
+        retired.get(0).run();
+        walls.place(player, frames.get(3), held);
+        assertEquals(1, workers.size(), "The retired owner callback must release its admission exactly once");
+        assertNoFrameChangesOrItemConsumption();
+    }
+
+    private void fillWall() throws Exception {
+        storage.artwork(LegacyMapFixture.ARTWORK);
+        for (int i = 0; i < frames.size(); i++) {
+            ItemStack tile = imageMap(124 + i);
+            when(frames.get(i).getItem()).thenReturn(tile);
+        }
+        Item dropped = mock(Item.class);
+        when(dropped.isValid()).thenReturn(true);
+        when(world.dropItemNaturally(any(Location.class), any(ItemStack.class))).thenReturn(dropped);
+    }
+
+    @SuppressWarnings("deprecation")
+    private EntityDamageByEntityEvent damagePickup() {
+        return new EntityDamageByEntityEvent(player, frames.get(2), EntityDamageEvent.DamageCause.ENTITY_ATTACK, 1d);
     }
 
     private PlayerInteractEntityEvent placement() {

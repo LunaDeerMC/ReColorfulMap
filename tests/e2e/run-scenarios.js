@@ -37,7 +37,7 @@ function passed (name, details = {}) {
   console.log(JSON.stringify(results.at(-1)))
 }
 
-function png () {
+function png (width = 256, height = 256) {
   const crc = buffer => {
     let value = 0xffffffff
     for (const byte of buffer) {
@@ -51,10 +51,10 @@ function png () {
     header.writeUInt32BE(payload.length); tail.writeUInt32BE(crc(body))
     return Buffer.concat([header, body, tail])
   }
-  const header = Buffer.alloc(13); header.writeUInt32BE(256, 0); header.writeUInt32BE(256, 4); header[8] = 8; header[9] = 6
-  const pixels = Buffer.alloc(256 * (256 * 4 + 1))
-  for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
-    const offset = y * 1025 + 1 + x * 4
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 6
+  const pixels = Buffer.alloc(height * (width * 4 + 1))
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const offset = y * (width * 4 + 1) + 1 + x * 4
     pixels[offset] = x; pixels[offset + 1] = y; pixels[offset + 2] = 100; pixels[offset + 3] = 255
   }
   return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header), chunk('IDAT', zlib.deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))])
@@ -202,7 +202,7 @@ async function main () {
     await command('setup'); const wallArt = await generate(); await place(); const handArt = await generate()
     const checkpoint = { frames: read().frames.map(frame => frame.uuid), wallArt, handArt }
     const mapIds = [...read().frames.map(frame => frame.item.mapId), read().hand.mapId]
-    await until(() => mapIds.every(id => bot.maps.get(id)?.received === 16384 && Date.now() - bot.maps.get(id).lastContentAt > 700), 'stable complete map pixels')
+    await until(() => mapIds.every(id => bot.maps.get(id)?.received === 16384 && new Set(bot.maps.get(id).pixels).size > 8 && Date.now() - bot.maps.get(id).lastContentAt > 700), 'stable nonblank complete pixels for every wall and hand map', 30000)
     checkpoint.pixelHashes = Object.fromEntries(mapIds.map(id => [id, crypto.createHash('sha256').update(bot.maps.get(id).pixels).digest('hex')]))
     fs.writeFileSync(path.join(server, 'plugins/RCME2E/restart-checkpoint.json'), JSON.stringify(checkpoint, null, 2))
     assert.ok(mapPackets.some(packet => packet.bytes === 16384 && packet.colors > 8), 'client received nonblank image pixels')

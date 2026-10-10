@@ -126,6 +126,39 @@ class MapDestructionEventTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"DESPAWN", "OUT_OF_WORLD"})
+    void disappearanceDeletesNestedArtworkOnceAndOnlyOnTheWorker(String cause) throws Exception {
+        UUID other = UUID.randomUUID();
+        Item item = mock(Item.class);
+        ItemStack container = ContainedMapArtworksTest.shulker(
+                ContainedMapArtworksTest.map(artwork), ContainedMapArtworksTest.bundle(
+                        ContainedMapArtworksTest.map(artwork), ContainedMapArtworksTest.map(other)));
+        when(item.getItemStack()).thenReturn(container);
+        List<Runnable> tasks = new ArrayList<>();
+        try (MockedStatic<Scheduler> scheduler = queue(tasks)) {
+            listener.removed(item, cause);
+            assertEquals(2, tasks.size());
+            verifyNoInteractions(storage);
+            tasks.forEach(Runnable::run);
+            verify(storage).deleteArtwork(artwork);
+            verify(storage).deleteArtwork(other);
+        }
+    }
+
+    @Test
+    void damagedContainerKeepsArtworkBecauseItsContentsCanSurvive() {
+        Item item = mock(Item.class);
+        ItemStack container = ContainedMapArtworksTest.shulker(
+                ContainedMapArtworksTest.bundle(ContainedMapArtworksTest.map(artwork)));
+        when(item.getItemStack()).thenReturn(container);
+        try (MockedStatic<Scheduler> scheduler = mockStatic(Scheduler.class)) {
+            listener.removed(item, "DEATH");
+            verifyNoInteractions(storage);
+            scheduler.verifyNoInteractions();
+        }
+    }
+
     @Test
     void fileFailureIsLoggedAndReleasesPendingDeletion() throws Exception {
         List<Runnable> tasks = new ArrayList<>();

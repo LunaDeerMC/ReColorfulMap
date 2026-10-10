@@ -6,7 +6,7 @@ import javax.annotation.Nullable;
 import java.util.logging.Logger;
 
 public class XLogger {
-    public static XLogger instance;
+    public static volatile XLogger instance = new XLogger();
 
     public XLogger() {
         instance = this;
@@ -28,14 +28,14 @@ public class XLogger {
     }
 
     private final Logger _logger;
-    private boolean _debug = false;
+    private volatile boolean _debug = false;
 
     public static void info(String message) {
         instance._logger.info(" I | " + message);
     }
 
     public static void info(String message, Object... args) {
-        instance._logger.info(" I | " + String.format(message, args));
+        instance._logger.info(" I | " + SafeMessageFormat.format(instance._logger, message, args));
     }
 
     public static void warn(String message) {
@@ -43,7 +43,7 @@ public class XLogger {
     }
 
     public static void warn(String message, Object... args) {
-        instance._logger.warning(" W | " + String.format(message, args));
+        instance._logger.warning(" W | " + SafeMessageFormat.format(instance._logger, message, args));
     }
 
     public static void err(String message) {
@@ -51,7 +51,7 @@ public class XLogger {
     }
 
     public static void err(String message, Object... args) {
-        instance._logger.severe(" E | " + String.format(message, args));
+        instance._logger.severe(" E | " + SafeMessageFormat.format(instance._logger, message, args));
     }
 
     public static void debug(String message) {
@@ -61,7 +61,7 @@ public class XLogger {
 
     public static void debug(String message, Object... args) {
         if (!instance._debug) return;
-        instance._logger.info(" D | " + String.format(message, args));
+        instance._logger.info(" D | " + SafeMessageFormat.format(instance._logger, message, args));
     }
 
 }

@@ -4,6 +4,7 @@ main: cn.lunadeer.reColorfulMap.ReColorfulMap
 api-version: '1.20'
 load: STARTUP
 folia-supported: true
+softdepend: [Vault, VaultUnlocked]
 commands:
   tomap:
     description: Convert image to map
@@ -17,8 +18,14 @@ commands:
     description: Clean temporary map storage files
     usage: /cleanColorfulMap
     permission: recolorfulmap.admin
+  mapmanage:
+    description: Manage map generation and pending deliveries
+    usage: /mapmanage <status|cancel|list|claim|inspect|recover|resolve>
+    permission: recolorfulmap.manage
 permissions:
   recolorfulmap.tomap:
     default: true
   recolorfulmap.admin:
     default: op
+  recolorfulmap.manage:
+    default: true

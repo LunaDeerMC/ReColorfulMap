@@ -126,4 +126,32 @@ class ImageRendererTest {
         verify(anotherCanvas, never()).drawImage(anyInt(), anyInt(), any(Image.class));
     }
 
+    @Test
+    void shutdownClearsPreloadedPixelsFromTheSharedCache() throws Exception {
+        MapStorage storage = spy(LegacyMapFixture.copyTo(directory));
+        MapStorage.ImageReference reference = MapStorage.ImageReference.thumbnail(LegacyMapFixture.ARTWORK);
+        BufferedImage pixels = storage.read(reference);
+        ImageRenderer renderer = new ImageRenderer(storage, reference, pixels);
+        MapView view = mock(MapView.class);
+        Player player = mock(Player.class);
+        MapCanvas canvas = mock(MapCanvas.class);
+        List<Runnable> backgroundTasks = new ArrayList<>();
+        try (MockedStatic<Scheduler> scheduler = mockStatic(Scheduler.class)) {
+            scheduler.when(() -> Scheduler.runTaskAsync(any(Runnable.class))).thenAnswer(call -> {
+                backgroundTasks.add(call.getArgument(0));
+                return null;
+            });
+            ImageRenderer.clearCache(storage);
+            renderer.render(view, canvas, player);
+            verify(canvas, never()).drawImage(anyInt(), anyInt(), any(Image.class));
+            assertEquals(1, backgroundTasks.size());
+            backgroundTasks.remove(0).run();
+            renderer.render(view, canvas, player);
+            verify(canvas).drawImage(anyInt(), anyInt(), any(Image.class));
+            verify(storage, times(2)).read(reference);
+        } finally {
+            ImageRenderer.clearCache(storage);
+        }
+    }
+
 }

@@ -36,7 +36,7 @@ public class Vault implements VaultInterface {
     public void withdrawPlayer(Player player, double amount) {
         EconomyResponse response = econ.withdrawPlayer(player, amount);
         if (!response.transactionSuccess()) {
-            throw new IllegalStateException(response.errorMessage);
+            throw new TransactionRejectedException(response.errorMessage);
         }
     }
 
@@ -44,7 +44,7 @@ public class Vault implements VaultInterface {
     public void depositPlayer(Player player, double amount) {
         EconomyResponse response = econ.depositPlayer(player, amount);
         if (!response.transactionSuccess()) {
-            throw new IllegalStateException(response.errorMessage);
+            throw new TransactionRejectedException(response.errorMessage);
         }
     }
 
