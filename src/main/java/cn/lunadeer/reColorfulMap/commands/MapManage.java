@@ -17,7 +17,7 @@ import java.util.*;
 /** Recovery commands never silently reset delivered or crash-ambiguous receipts. */
 public final class MapManage implements TabExecutor {
     public static class MapManageText extends ConfigurationPart {
-        public String usage = "Usage: /mapmanage status|cancel|list|claim <artwork UUID>";
+        public String usage = "Usage: /mapmanage copy|status|cancel|list|claim <artwork UUID>";
         public String adminUsage = "Admin: /mapmanage inspect <UUID> | recover <UUID> <online player> confirm | resolve <UUID> <pending|delivered|paid|unpaid|refunded> confirm";
         public String noPermission = "You do not have permission to use this operation.";
         public String idle = "No image is currently being generated.";
@@ -64,6 +64,13 @@ public final class MapManage implements TabExecutor {
         }
         try {
             switch (operation) {
+                case "copy" -> {
+                    if (!sender.hasPermission("recolorfulmap.copy")) {
+                        Notification.error(sender, Language.mapManage.noPermission); break;
+                    }
+                    if (args.length != 1) { Notification.info(sender, Language.mapCopy.usage); break; }
+                    CopyMap.copy((Player) sender, ReColorfulMap.getInstance().getArtworkCopyService());
+                }
                 case "status" -> Notification.info(sender, service.status(((Player) sender).getUniqueId()));
                 case "cancel" -> Notification.info(sender, service.cancel(((Player) sender).getUniqueId())
                         ? Language.mapManage.cancelled : Language.mapManage.idle);
@@ -130,6 +137,7 @@ public final class MapManage implements TabExecutor {
                                                @NotNull String label, @NotNull String[] args) {
         if (args.length == 1) {
             List<String> values = new ArrayList<>(List.of("status", "cancel", "list", "claim"));
+            if (sender.hasPermission("recolorfulmap.copy")) values.add("copy");
             if (sender.hasPermission("recolorfulmap.admin")) values.addAll(List.of("inspect", "recover", "resolve"));
             return values.stream().filter(value -> value.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }

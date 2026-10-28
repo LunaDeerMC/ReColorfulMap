@@ -26,6 +26,96 @@ class MapStorageTest {
     @TempDir
     Path data;
 
+    @Test
+    void copiedArtworkHasIndependentFilesAndSurvivesSourceDeletionAndRestart() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork original = storage.create(image(20, 10, Color.MAGENTA),
+                image(256, 256, Color.CYAN), image(128, 128, Color.YELLOW));
+        Artwork copy = storage.copyArtwork(original.id());
+        assertNotEquals(original.id(), copy.id());
+        assertEquals(original.columns(), copy.columns());
+        assertEquals(original.rows(), copy.rows());
+        Path source = data.resolve("maps/" + original.id());
+        Path duplicate = data.resolve("maps/" + copy.id());
+        for (String name : List.of("raw.png", "thumb.png", "0_0.png", "0_1.png", "1_0.png", "1_1.png")) {
+            assertArrayEquals(Files.readAllBytes(source.resolve(name)), Files.readAllBytes(duplicate.resolve(name)));
+            assertFalse(Files.isSameFile(source.resolve(name), duplicate.resolve(name)), name);
+        }
+        assertTrue(storage.deleteArtwork(original.id()));
+        MapStorage restarted = new MapStorage(data);
+        assertEquals(copy, restarted.artwork(copy.id()));
+        assertEquals(Color.YELLOW.getRGB(), restarted.read(ImageReference.thumbnail(copy.id())).getRGB(0, 0));
+        assertEquals(Color.CYAN.getRGB(), restarted.read(ImageReference.tile(copy.id(), 1, 1)).getRGB(0, 0));
+        assertEquals(0, restarted.cleanTemporaryFiles());
+    }
+
+    @Test
+    void destroyingOneCopyDoesNotDamageItsSourceOrSiblingCopy() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork source = storage.create(image(1, 1, Color.RED), image(128, 128, Color.RED), image(128, 128, Color.RED));
+        Artwork first = storage.copyArtwork(source.id());
+        Artwork second = storage.copyArtwork(source.id());
+        assertNotEquals(first.id(), second.id());
+        assertTrue(storage.deleteArtwork(first.id()));
+        assertEquals(Color.RED.getRGB(), storage.read(ImageReference.thumbnail(source.id())).getRGB(0, 0));
+        assertEquals(Color.RED.getRGB(), storage.read(ImageReference.tile(second.id(), 0, 0)).getRGB(0, 0));
+    }
+
+    @Test
+    void incompleteSourceCannotPublishAPartialCopy() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork source = storage.create(image(1, 1, Color.RED), image(256, 256, Color.RED), image(128, 128, Color.RED));
+        Files.delete(data.resolve("maps/" + source.id() + "/0_1.png"));
+        assertThrows(IOException.class, () -> storage.copyArtwork(source.id()));
+        try (var paths = Files.list(data.resolve("maps"))) {
+            assertEquals(List.of(source.id().toString()), paths.map(path -> path.getFileName().toString()).toList());
+        }
+    }
+
+    @Test
+    void destroyingALooseTilePreservesEveryOtherPieceOfItsWall() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork artwork = storage.create(image(5, 5, Color.BLUE), image(256, 256, Color.GREEN), image(128, 128, Color.RED));
+        ImageReference removed = ImageReference.tile(artwork.id(), 0, 0);
+        assertTrue(storage.deleteImage(removed));
+        assertTrue(storage.isDeleted(removed));
+        assertFalse(storage.isDeleted(artwork.id()));
+        assertFalse(storage.isDeleted(ImageReference.tile(artwork.id(), 1, 1)));
+        assertThrows(IOException.class, () -> storage.read(removed));
+        assertEquals(Color.GREEN.getRGB(), storage.read(ImageReference.tile(artwork.id(), 1, 1)).getRGB(0, 0));
+        assertEquals(Color.RED.getRGB(), storage.read(ImageReference.thumbnail(artwork.id())).getRGB(0, 0));
+        assertTrue(Files.isRegularFile(data.resolve("maps/" + artwork.id() + "/raw.png")));
+        assertThrows(IOException.class, () -> storage.artwork(artwork.id()));
+    }
+
+    @Test
+    void unknownLegacyOwnershipNeverAuthorizesAutomaticDeletion() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork legacy = storage.create(image(1, 1, Color.RED), image(128, 128, Color.RED), image(128, 128, Color.RED));
+        Files.delete(data.resolve("maps/" + legacy.id() + "/.independent-artwork"));
+        assertFalse(storage.deleteImage(ImageReference.thumbnail(legacy.id())));
+        assertFalse(storage.deleteImage(ImageReference.tile(legacy.id(), 0, 0)));
+        assertEquals(Color.RED.getRGB(), storage.read(ImageReference.thumbnail(legacy.id())).getRGB(0, 0));
+        Artwork independent = storage.copyArtwork(legacy.id());
+        assertTrue(storage.deleteImage(ImageReference.thumbnail(independent.id())));
+        assertEquals(Color.RED.getRGB(), storage.read(ImageReference.thumbnail(legacy.id())).getRGB(0, 0));
+    }
+
+    @Test
+    void survivingTileCanBeCopiedAfterAnotherPieceWasDestroyed() throws Exception {
+        MapStorage storage = new MapStorage(data);
+        Artwork original = storage.create(image(4, 4, Color.BLUE), image(256, 256, Color.GREEN), image(128, 128, Color.RED));
+        storage.deleteImage(ImageReference.tile(original.id(), 0, 0));
+        Artwork copy = storage.copyImage(ImageReference.tile(original.id(), 1, 1));
+        assertEquals(new Artwork(copy.id(), 1, 1), copy);
+        MapStorage restarted = new MapStorage(data);
+        assertEquals(copy, restarted.artwork(copy.id()));
+        assertEquals(Color.GREEN.getRGB(), restarted.read(ImageReference.thumbnail(copy.id())).getRGB(0, 0));
+        assertEquals(Color.GREEN.getRGB(), restarted.read(ImageReference.tile(copy.id(), 0, 0)).getRGB(0, 0));
+        assertTrue(restarted.deleteImage(ImageReference.thumbnail(copy.id())));
+        assertEquals(Color.GREEN.getRGB(), restarted.read(ImageReference.tile(original.id(), 1, 1)).getRGB(0, 0));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"maps.yml", "maps.yaml"})
     void refusesLegacyIndexAndRequestsOfflineMigration(String name) throws Exception {
@@ -94,6 +184,9 @@ class MapStorageTest {
         MapStorage storage = new MapStorage(data);
         Artwork artwork = storage.create(image(256, 256, Color.BLACK), image(256, 256, Color.BLACK), image(128, 128, Color.BLACK));
         Files.delete(data.resolve("maps/" + artwork.id() + "/0_1.png"));
+        Path directory = data.resolve("maps/" + artwork.id());
+        Files.setLastModifiedTime(directory, java.nio.file.attribute.FileTime.fromMillis(
+                Files.getLastModifiedTime(directory).toMillis() + 1000));
 
         assertThrows(IOException.class, () -> storage.artwork(artwork.id()));
     }

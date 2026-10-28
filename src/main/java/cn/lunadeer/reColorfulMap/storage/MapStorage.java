@@ -42,6 +42,8 @@ public final class MapStorage {
     private final Path mapsDirectory;
     private final Set<Path> activeStaging = ConcurrentHashMap.newKeySet();
     private final Set<UUID> deletedArtworks = ConcurrentHashMap.newKeySet();
+    private final Set<ImageReference> deletedImages = ConcurrentHashMap.newKeySet();
+    private static final String INDEPENDENT_FILE = ".independent-artwork";
     // Dimensions are immutable for published artwork. Bound metadata independently of pixels.
     private final Map<UUID, Artwork> artworks = new LinkedHashMap<>(16, 0.75f, true);
     private final Map<UUID, FileTime> artworkDirectoryTimes = new java.util.HashMap<>();
@@ -157,6 +159,7 @@ public final class MapStorage {
                             temporary.resolve(x + "_" + y + ".png"));
                 }
             }
+            writeIndependentMarker(temporary, id, columns, rows);
             Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
             return cacheArtwork(new Artwork(id, columns, rows));
         } finally {
@@ -168,6 +171,105 @@ public final class MapStorage {
             } finally {
                 activeStaging.remove(temporary);
             }
+        }
+    }
+
+    /**
+     * Gives a duplicate its own complete directory and identity. Run this on a disk worker,
+     * before exposing the new item. The source cannot be deleted halfway through the copy.
+     * Files are copied, never linked, so deleting either artwork leaves the other intact.
+     */
+    public synchronized Artwork copyArtwork(UUID sourceId) throws IOException {
+        Artwork source = artwork(sourceId);
+        validateArtwork(source);
+        Path sourceDirectory = artworkDirectory(sourceId);
+        Path original = sourceDirectory.resolve("raw.png");
+        boolean hasOriginal = Files.exists(original, LinkOption.NOFOLLOW_LINKS);
+        if (hasOriginal) requireRegularFile(original);
+        UUID id = UUID.randomUUID();
+        Path target = mapsDirectory.resolve(id.toString());
+        Path temporary = mapsDirectory.resolve(TEMP_PREFIX + "artwork-" + id + ".tmp");
+        activeStaging.add(temporary);
+        boolean created = false;
+        try {
+            Files.createDirectory(temporary);
+            created = true;
+            if (hasOriginal) copyImage(original, temporary.resolve("raw.png"));
+            copyImage(sourceDirectory.resolve("thumb.png"), temporary.resolve("thumb.png"));
+            for (int y = 0; y < source.rows(); y++) {
+                for (int x = 0; x < source.columns(); x++) {
+                    String name = x + "_" + y + ".png";
+                    copyImage(sourceDirectory.resolve(name), temporary.resolve(name));
+                }
+            }
+            writeIndependentMarker(temporary, id, source.columns(), source.rows());
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
+            return cacheArtwork(new Artwork(id, source.columns(), source.rows()));
+        } finally {
+            try {
+                if (created) deleteTemporaryQuietly(temporary);
+            } finally {
+                activeStaging.remove(temporary);
+            }
+        }
+    }
+
+    /** A copied loose tile is a complete independent 1x1 artwork, even if its old wall is damaged. */
+    public synchronized Artwork copyImage(ImageReference reference) throws IOException {
+        if (reference.thumbnail()) return copyArtwork(reference.artwork());
+        read(reference); // Validate just the requested tile; unrelated missing pieces do not matter.
+        Path source = artworkDirectory(reference.artwork()).resolve(reference.x() + "_" + reference.y() + ".png");
+        UUID id = UUID.randomUUID();
+        Path temporary = mapsDirectory.resolve(TEMP_PREFIX + "artwork-" + id + ".tmp");
+        Path target = mapsDirectory.resolve(id.toString());
+        activeStaging.add(temporary);
+        boolean created = false;
+        try {
+            Files.createDirectory(temporary);
+            created = true;
+            for (String name : new String[]{"raw.png", "thumb.png", "0_0.png"}) {
+                copyImage(source, temporary.resolve(name));
+            }
+            writeIndependentMarker(temporary, id, 1, 1);
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
+            return cacheArtwork(new Artwork(id, 1, 1));
+        } finally {
+            try {
+                if (created) deleteTemporaryQuietly(temporary);
+            } finally {
+                activeStaging.remove(temporary);
+            }
+        }
+    }
+
+    private static void copyImage(Path source, Path target) throws IOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new java.io.InterruptedIOException("Artwork copy was interrupted");
+        }
+        requireRegularFile(source);
+        Files.copy(source, target);
+    }
+
+    private static void writeIndependentMarker(Path directory, UUID id, int columns, int rows) throws IOException {
+        Files.writeString(directory.resolve(INDEPENDENT_FILE), "version=1\nid=" + id
+                + "\ncolumns=" + columns + "\nrows=" + rows + "\n");
+    }
+
+    private Optional<Artwork> independentArtwork(Path directory, UUID id) throws IOException {
+        Path marker = directory.resolve(INDEPENDENT_FILE);
+        if (!Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) return Optional.empty();
+        requireRegularFile(marker);
+        if (Files.size(marker) > 1024) throw new IOException("Invalid artwork ownership marker");
+        java.util.Properties properties = new java.util.Properties();
+        try (var reader = Files.newBufferedReader(marker)) { properties.load(reader); }
+        try {
+            if (!"1".equals(properties.getProperty("version")) || !id.toString().equals(properties.getProperty("id"))) {
+                throw new IllegalArgumentException("Wrong artwork ownership marker identity");
+            }
+            return Optional.of(new Artwork(id, Integer.parseInt(properties.getProperty("columns")),
+                    Integer.parseInt(properties.getProperty("rows"))));
+        } catch (IllegalArgumentException failure) {
+            throw new IOException("Invalid artwork ownership marker", failure);
         }
     }
 
@@ -210,6 +312,10 @@ public final class MapStorage {
         if (maxX < 0 || maxY < 0 || maxX == Integer.MAX_VALUE || maxY == Integer.MAX_VALUE
                 || count != ((long) maxX + 1) * ((long) maxY + 1)) {
             throw new IOException("Incomplete tile matrix: " + directory);
+        }
+        Optional<Artwork> independent = independentArtwork(directory, id);
+        if (independent.isPresent() && (independent.get().columns() != maxX + 1 || independent.get().rows() != maxY + 1)) {
+            throw new IOException("Incomplete independent artwork matrix: " + directory);
         }
         requireRegularFile(directory.resolve("thumb.png"));
         return cacheArtwork(new Artwork(id, maxX + 1, maxY + 1));
@@ -331,6 +437,43 @@ public final class MapStorage {
             // If removal fails, cleanup can retry the already unpublished directory.
             activeStaging.remove(temporary);
         }
+    }
+
+    /**
+     * Automatic item cleanup only owns data with an explicit independent-artwork marker.
+     * Old/migrated shared directories are retained until an offline separation establishes ownership.
+     * A loose tile owns only its tile file; other pieces of its wall must remain readable.
+     */
+    public synchronized boolean deleteImage(ImageReference reference) throws IOException {
+        if (isDeleted(reference.artwork())) return false;
+        Path directory = artworkDirectory(reference.artwork());
+        if (independentArtwork(directory, reference.artwork()).isEmpty()) return false;
+        if (reference.thumbnail()) return deleteArtwork(reference.artwork());
+        Path file = directory.resolve(reference.x() + "_" + reference.y() + ".png");
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return false;
+        requireRegularFile(file);
+        Files.delete(file);
+        deletedImages.add(reference);
+        boolean tilesRemain = false;
+        try (var files = Files.newDirectoryStream(directory)) {
+            for (Path remaining : files) {
+                if (TILE_NAME.matcher(remaining.getFileName().toString()).matches()) {
+                    tilesRemain = true;
+                    break;
+                }
+            }
+        }
+        if (!tilesRemain) return deleteArtwork(reference.artwork());
+        synchronized (artworks) {
+            artworks.remove(reference.artwork());
+            artworkDirectoryTimes.remove(reference.artwork());
+            validatedArtworks.remove(reference.artwork());
+        }
+        return true;
+    }
+
+    public boolean isDeleted(ImageReference reference) {
+        return isDeleted(reference.artwork()) || deletedImages.contains(reference);
     }
 
     /** Remembers deletion for this process so decoded image caches can invalidate their entries. */

@@ -37,7 +37,7 @@ reload-command:
   reloading-config: Reloading configuration file...
   reload-config-success: Configuration file reloaded successfully!
 map-manage:
-  usage: 'Usage: /mapmanage status|cancel|list|claim <artwork UUID>'
+  usage: 'Usage: /mapmanage copy|status|cancel|list|claim <artwork UUID>'
   admin-usage: 'Admin: /mapmanage inspect <UUID> | recover <UUID> <online player> confirm | resolve <UUID> <pending|delivered|paid|unpaid|refunded> confirm'
   no-permission: You do not have permission to use this operation.
   idle: No image is currently being generated.
@@ -66,3 +66,11 @@ map-manage:
   resolve-payment-first: First confirm the economy transaction and resolve it as paid, unpaid or refunded.
   invalid-resolution: This payment resolution does not apply to the current record.
   operation-failed: 'Map management failed: %s'
+map-copy:
+  usage: Use /mapmanage copy while holding an image map.
+  space: Leave one empty inventory slot for the new map.
+  changed: Copy cancelled because the held map or destination slot changed. The original was kept.
+  unavailable: An image copy is already running or the queue is full. Please wait.
+  failed: The map could not be copied. The original was kept; check the server log.
+  uncertain: The copy result could not be confirmed. Its image files were kept; check your inventory and the server log.
+  copied: An independent copy was added to your inventory.

@@ -20,7 +20,7 @@ commands:
     permission: recolorfulmap.admin
   mapmanage:
     description: Manage map generation and pending deliveries
-    usage: /mapmanage <status|cancel|list|claim|inspect|recover|resolve>
+    usage: /mapmanage <copy|status|cancel|list|claim|inspect|recover|resolve>
     permission: recolorfulmap.manage
 permissions:
   recolorfulmap.tomap:
@@ -28,4 +28,6 @@ permissions:
   recolorfulmap.admin:
     default: op
   recolorfulmap.manage:
+    default: true
+  recolorfulmap.copy:
     default: true

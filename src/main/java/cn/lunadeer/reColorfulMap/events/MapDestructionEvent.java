@@ -12,7 +12,6 @@ import org.bukkit.event.entity.EntityEvent;
 
 import java.lang.reflect.Method;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -20,7 +19,7 @@ import java.util.logging.Level;
 public final class MapDestructionEvent implements Listener {
     private final ReColorfulMap plugin;
     private final MapStorage storage;
-    private final Set<UUID> pending = ConcurrentHashMap.newKeySet();
+    private final Set<MapStorage.ImageReference> pending = ConcurrentHashMap.newKeySet();
 
     public MapDestructionEvent(ReColorfulMap plugin) {
         this.plugin = plugin;
@@ -66,7 +65,7 @@ public final class MapDestructionEvent implements Listener {
         return "DEATH".equals(cause) || "DESPAWN".equals(cause) || "OUT_OF_WORLD".equals(cause);
     }
 
-    // All entity/item access stays on the event's owning thread. The worker receives only a UUID.
+    // All entity/item access stays on the event's owning thread. The worker receives only a path value.
     void removed(Entity entity, String cause) {
         if (!isDestructionCause(cause) || !(entity instanceof Item item)) {
             return;
@@ -75,30 +74,30 @@ public final class MapDestructionEvent implements Listener {
         // Despawn and falling out of the world actually discard the complete item tree.
         boolean includeContents = "DESPAWN".equals(cause) || "OUT_OF_WORLD".equals(cause);
         ContainedMapArtworks.Result result = ContainedMapArtworks.collect(item.getItemStack(), includeContents);
-        result.artworks().forEach(this::delete);
+        result.references().forEach(this::delete);
         if (result.truncated()) {
             plugin.getLogger().fine("Destroyed container exceeded artwork traversal limits; "
                     + "unvisited artwork files were kept.");
         }
     }
 
-    private void delete(UUID artwork) {
-        if (!pending.add(artwork)) {
+    private void delete(MapStorage.ImageReference reference) {
+        if (!pending.add(reference)) {
             return;
         }
         try {
             Scheduler.runTaskAsync(() -> {
                 try {
-                    storage.deleteArtwork(artwork);
+                    storage.deleteImage(reference);
                 } catch (Exception failure) {
-                    plugin.getLogger().log(Level.WARNING, "Cannot delete destroyed artwork " + artwork, failure);
+                    plugin.getLogger().log(Level.WARNING, "Cannot delete destroyed image " + reference.path(), failure);
                 } finally {
-                    pending.remove(artwork);
+                    pending.remove(reference);
                 }
             });
         } catch (RuntimeException failure) {
-            pending.remove(artwork);
-            plugin.getLogger().log(Level.WARNING, "Cannot schedule deletion of destroyed artwork " + artwork, failure);
+            pending.remove(reference);
+            plugin.getLogger().log(Level.WARNING, "Cannot schedule deletion of destroyed image " + reference.path(), failure);
         }
     }
 }

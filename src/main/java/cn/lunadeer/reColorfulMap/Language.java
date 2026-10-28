@@ -4,6 +4,7 @@ import cn.lunadeer.reColorfulMap.commands.MapManage;
 import cn.lunadeer.reColorfulMap.commands.Reload;
 import cn.lunadeer.reColorfulMap.commands.ToMap;
 import cn.lunadeer.reColorfulMap.events.ImageMapEvent;
+import cn.lunadeer.reColorfulMap.events.MapCopyEvent;
 import cn.lunadeer.reColorfulMap.utils.Notification;
 import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationFile;
 import cn.lunadeer.reColorfulMap.utils.configuration.ConfigurationManager;
@@ -21,6 +22,8 @@ public class Language extends ConfigurationFile {
     public static volatile ImageMapEvent.ImageMapEventText imageMapEvent = new ImageMapEvent.ImageMapEventText();
     public static volatile Reload.ReloadCommandText reloadCommand = new Reload.ReloadCommandText();
     public static volatile MapManage.MapManageText mapManage = new MapManage.MapManageText();
+
+    public static volatile MapCopyEvent.CopyText mapCopy = new MapCopyEvent.CopyText();
 
     static ConfigurationManager.Prepared prepare(String selectedLanguage) throws Exception {
         ReColorfulMap plugin = ReColorfulMap.getInstance();

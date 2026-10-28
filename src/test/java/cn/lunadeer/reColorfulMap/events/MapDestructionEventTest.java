@@ -19,6 +19,7 @@ import org.bukkit.plugin.EventExecutor;
 import org.bukkit.plugin.PluginManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -31,6 +32,9 @@ import java.util.List;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.nio.file.Path;
+import java.nio.file.Files;
+import java.awt.image.BufferedImage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -48,6 +52,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class MapDestructionEventTest {
+    @TempDir Path directory;
     private final UUID artwork = UUID.randomUUID();
     private MapStorage storage;
     private Logger logger;
@@ -66,6 +71,49 @@ class MapDestructionEventTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"DEATH", "DESPAWN", "OUT_OF_WORLD"})
+    void destroyingAnIndependentCopyPreservesItsOriginalAndSiblingPixels(String cause) throws Exception {
+        MapStorage real = new MapStorage(directory);
+        BufferedImage pixels = new BufferedImage(128, 128, BufferedImage.TYPE_INT_RGB);
+        pixels.setRGB(0, 0, 0xff12ab34);
+        MapStorage.Artwork original = real.create(pixels, pixels, pixels);
+        MapStorage.Artwork removed = real.copyArtwork(original.id());
+        MapStorage.Artwork sibling = real.copyArtwork(original.id());
+        when(plugin.getMapStorage()).thenReturn(real);
+        MapDestructionEvent actual = new MapDestructionEvent(plugin);
+        List<Runnable> tasks = new ArrayList<>();
+        try (MockedStatic<Scheduler> ignored = queue(tasks)) {
+            actual.removed(imageItem(MapStorage.ImageReference.thumbnail(removed.id())), cause);
+            tasks.forEach(Runnable::run);
+        }
+        assertFalse(Files.exists(directory.resolve("maps/" + removed.id())));
+        assertEquals(0xff12ab34, real.read(MapStorage.ImageReference.thumbnail(original.id())).getRGB(0, 0));
+        assertEquals(0xff12ab34, real.read(MapStorage.ImageReference.thumbnail(sibling.id())).getRGB(0, 0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DESPAWN", "OUT_OF_WORLD"})
+    void destroyedContainerOnlyDeletesItsIndependentCopies(String cause) throws Exception {
+        MapStorage real = new MapStorage(directory);
+        BufferedImage pixels = new BufferedImage(128, 128, BufferedImage.TYPE_INT_RGB);
+        MapStorage.Artwork original = real.create(pixels, pixels, pixels);
+        MapStorage.Artwork removed = real.copyArtwork(original.id());
+        Item container = mock(Item.class);
+        ItemStack nested = ContainedMapArtworksTest.shulker(
+                ContainedMapArtworksTest.bundle(ContainedMapArtworksTest.map(removed.id())));
+        when(container.getItemStack()).thenReturn(nested);
+        when(plugin.getMapStorage()).thenReturn(real);
+        MapDestructionEvent actual = new MapDestructionEvent(plugin);
+        List<Runnable> tasks = new ArrayList<>();
+        try (MockedStatic<Scheduler> ignored = queue(tasks)) {
+            actual.removed(container, cause);
+            tasks.forEach(Runnable::run);
+        }
+        assertFalse(Files.exists(directory.resolve("maps/" + removed.id())));
+        assertTrue(Files.isRegularFile(directory.resolve("maps/" + original.id() + "/thumb.png")));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DEATH", "DESPAWN", "OUT_OF_WORLD"})
     void trueDestructionQueuesDeletionWithoutDoingFileIoInTheEvent(String cause) throws Exception {
         List<Runnable> tasks = new ArrayList<>();
         Item item = imageItem(MapStorage.ImageReference.thumbnail(artwork));
@@ -73,9 +121,9 @@ class MapDestructionEventTest {
             assertTrue(MapDestructionEvent.isDestructionCause(cause));
             listener.removed(item, cause);
             assertEquals(1, tasks.size());
-            verify(storage, never()).deleteArtwork(any());
+            verify(storage, never()).deleteImage(any());
             tasks.get(0).run();
-            verify(storage).deleteArtwork(artwork);
+            verify(storage).deleteImage(MapStorage.ImageReference.thumbnail(artwork));
         }
     }
 
@@ -111,18 +159,20 @@ class MapDestructionEventTest {
     }
 
     @Test
-    void thumbnailAndLooseTilesOfOneArtworkShareOnePendingDeletion() throws Exception {
+    void thumbnailAndLooseTilesKeepTheirDistinctCleanupScopes() throws Exception {
         List<Runnable> tasks = new ArrayList<>();
         Item thumbnail = imageItem(MapStorage.ImageReference.thumbnail(artwork));
         Item tile = imageItem(MapStorage.ImageReference.tile(artwork, 2, 1));
         try (MockedStatic<Scheduler> scheduler = queue(tasks)) {
             listener.removed(thumbnail, "DESPAWN");
+            listener.removed(thumbnail, "DEATH");
             listener.removed(tile, "DEATH");
-            assertEquals(1, tasks.size());
-            tasks.get(0).run();
-            verify(storage).deleteArtwork(artwork);
-            listener.removed(tile, "OUT_OF_WORLD");
             assertEquals(2, tasks.size());
+            tasks.forEach(Runnable::run);
+            verify(storage).deleteImage(MapStorage.ImageReference.thumbnail(artwork));
+            verify(storage).deleteImage(MapStorage.ImageReference.tile(artwork, 2, 1));
+            listener.removed(tile, "OUT_OF_WORLD");
+            assertEquals(3, tasks.size());
         }
     }
 
@@ -141,8 +191,8 @@ class MapDestructionEventTest {
             assertEquals(2, tasks.size());
             verifyNoInteractions(storage);
             tasks.forEach(Runnable::run);
-            verify(storage).deleteArtwork(artwork);
-            verify(storage).deleteArtwork(other);
+            verify(storage).deleteImage(MapStorage.ImageReference.thumbnail(artwork));
+            verify(storage).deleteImage(MapStorage.ImageReference.thumbnail(other));
         }
     }
 
@@ -164,7 +214,7 @@ class MapDestructionEventTest {
         List<Runnable> tasks = new ArrayList<>();
         Item item = imageItem(MapStorage.ImageReference.thumbnail(artwork));
         IOException failure = new IOException("read-only filesystem");
-        doThrow(failure).when(storage).deleteArtwork(artwork);
+        doThrow(failure).when(storage).deleteImage(MapStorage.ImageReference.thumbnail(artwork));
         try (MockedStatic<Scheduler> scheduler = queue(tasks)) {
             listener.removed(item, "DEATH");
             tasks.get(0).run();
@@ -213,7 +263,7 @@ class MapDestructionEventTest {
             executor.getValue().execute(listener, new RemovalEvent(item, RemovalCause.DEATH));
             assertEquals(1, tasks.size());
             tasks.get(0).run();
-            verify(storage).deleteArtwork(artwork);
+            verify(storage).deleteImage(MapStorage.ImageReference.tile(artwork, 0, 0));
         }
     }
 

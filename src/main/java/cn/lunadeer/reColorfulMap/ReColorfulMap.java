@@ -7,9 +7,11 @@ import cn.lunadeer.reColorfulMap.commands.MapManage;
 import cn.lunadeer.reColorfulMap.events.ImageMapEvent;
 import cn.lunadeer.reColorfulMap.events.MapBindingEvent;
 import cn.lunadeer.reColorfulMap.events.MapDestructionEvent;
+import cn.lunadeer.reColorfulMap.events.MapCopyEvent;
 import cn.lunadeer.reColorfulMap.storage.MapStorage;
 import cn.lunadeer.reColorfulMap.services.ArtworkWallService;
 import cn.lunadeer.reColorfulMap.services.GenerationService;
+import cn.lunadeer.reColorfulMap.services.ArtworkCopyService;
 import cn.lunadeer.reColorfulMap.utils.Notification;
 import cn.lunadeer.reColorfulMap.utils.Scheduler;
 import cn.lunadeer.reColorfulMap.utils.XLogger;
@@ -47,6 +49,7 @@ public final class ReColorfulMap extends JavaPlugin {
             mapViewRegistry = new MapViewRegistry(mapStorage);
             artworkWallService = new ArtworkWallService(this);
             generationService = new GenerationService(mapStorage, getDataFolder().toPath(), Configuration.snapshot().generation());
+            artworkCopyService = new ArtworkCopyService(this);
         } catch (IOException e) {
             getLogger().log(java.util.logging.Level.SEVERE, "Cannot initialize map services; existing data was not replaced", e);
             getServer().getPluginManager().disablePlugin(this);
@@ -73,6 +76,7 @@ public final class ReColorfulMap extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new ImageMapEvent(artworkWallService), this);
         MapBindingEvent bindings = new MapBindingEvent(this);
         getServer().getPluginManager().registerEvents(bindings, this);
+        getServer().getPluginManager().registerEvents(new MapCopyEvent(), this);
         new MapDestructionEvent(this).register();
         bindings.bootstrap();
 
@@ -82,6 +86,9 @@ public final class ReColorfulMap extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (artworkCopyService != null) {
+            artworkCopyService.close();
+        }
         if (generationService != null) {
             generationService.close();
         }
@@ -101,6 +108,12 @@ public final class ReColorfulMap extends JavaPlugin {
     private MapViewRegistry mapViewRegistry;
     private ArtworkWallService artworkWallService;
     private GenerationService generationService;
+    private ArtworkCopyService artworkCopyService;
+
+    /** Integration point for plugins that need copies with independent image ownership. */
+    public ArtworkCopyService getArtworkCopyService() {
+        return Objects.requireNonNull(artworkCopyService, "Artwork copying has not been initialized");
+    }
 
     public MapStorage getMapStorage() {
         return Objects.requireNonNull(mapStorage, "Map storage has not been initialized");

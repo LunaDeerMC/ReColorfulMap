@@ -66,7 +66,7 @@ public class ImageRenderer extends MapRenderer {
 
     @Override
     public synchronized void render(@NotNull MapView map, @NotNull MapCanvas canvas, @NotNull Player player) {
-        if (storage != null && storage.isDeleted(reference.artwork())) {
+        if (storage != null && storage.isDeleted(reference)) {
             IMAGES.invalidate(storage, reference.artwork());
             if (cleared.add(canvas)) {
                 for (int y = 0; y < 128; y++) {

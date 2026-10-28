@@ -142,9 +142,117 @@ class RegionCodecTests(unittest.TestCase):
         data[4:8] = data[:4]
         self.assert_bad(bytes(data), "overlap at sector")
 
-    def test_truncated_header_and_unaligned_file(self) -> None:
+    def test_truncated_header(self) -> None:
         self.assert_bad(bytes(100), "truncated region header")
-        self.assert_bad(bytes(HEADER_BYTES + 1), "multiple of 4096")
+
+    def test_unused_partial_tail_does_not_require_a_rewrite(self) -> None:
+        original = bytes(HEADER_BYTES) + b"unused trailing bytes"
+        self.path.write_bytes(original)
+        self.assertEqual(rewrite_region(self.path, lambda raw, _: None), {})
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_missing_final_padding_is_accepted_for_each_compression(self) -> None:
+        for kind in (1, 2, 3):
+            for padding in (0, 1, 19):
+                with self.subTest(compression=kind, padding=padding):
+                    original = region({0: record(b"valid payload", kind)})
+                    start = (struct.unpack_from(">I", original)[0] >> 8) * SECTOR_BYTES
+                    length = struct.unpack_from(">I", original, start)[0]
+                    original = original[:start + 4 + length + padding]
+                    self.path.write_bytes(original)
+                    observed = []
+                    self.assertEqual(rewrite_region(self.path, lambda raw, _: observed.append(raw)), {})
+                    self.assertEqual(observed, [b"valid payload"])
+                    self.assertEqual(rewrite_region(self.path, lambda raw, _: raw), {})
+                    self.assertEqual(self.path.read_bytes(), original)
+
+    def test_rewrite_other_chunk_preserves_short_tail_and_timestamps(self) -> None:
+        # A multi-sector raw tail ensures its stored allocation count is kept.
+        tail = record(b"tail" * 3000, 3, padding=b"X")
+        original = region({0: record(b"old", 2), 33: tail})
+        retained_tail_length = 4 + struct.unpack_from(">I", tail)[0] + 13
+        original = original[:len(original) - len(tail) + retained_tail_length]
+        self.path.write_bytes(original)
+        changes = rewrite_region(self.path, lambda raw, _: b"new" if raw == b"old" else None)
+        self.assertEqual(set(changes), {self.path})
+        output = changes[self.path]
+        self.assertEqual(len(output) % SECTOR_BYTES, 0)
+        self.assertEqual(get_record(output, 33), tail[:retained_tail_length].ljust(len(tail), b"\0"))
+        self.assertEqual(output[SECTOR_BYTES:HEADER_BYTES], original[SECTOR_BYTES:HEADER_BYTES])
+        self.assertEqual(self.path.read_bytes(), original)
+        self.path.write_bytes(output)
+        observed = []
+        self.assertEqual(rewrite_region(self.path, lambda raw, _: observed.append(raw)), {})
+        self.assertEqual(observed, [b"new", b"tail" * 3000])
+
+    def test_short_tail_cannot_claim_another_whole_sector(self) -> None:
+        original = bytearray(region({0: record(b"valid", 3)})[:-100])
+        location = struct.unpack_from(">I", original)[0]
+        struct.pack_into(">I", original, 0, location + 1)
+        self.assert_bad(bytes(original), "extends beyond the region file")
+
+    def test_short_tail_still_rejects_overlapping_allocations(self) -> None:
+        original = bytearray(region({0: record(b"valid", 3)})[:-100])
+        original[4:8] = original[:4]
+        self.assert_bad(bytes(original), "overlap at sector")
+
+    def test_short_tail_rejects_truncated_length_header(self) -> None:
+        original = region({0: record(b"valid", 3)})
+        start = (struct.unpack_from(">I", original)[0] >> 8) * SECTOR_BYTES
+        for retained in (1, 2, 3):
+            with self.subTest(retained=retained):
+                self.assert_bad(original[:start + retained], "truncated chunk length header")
+
+    def test_short_tail_rejects_truncated_compression_byte_or_payload(self) -> None:
+        for kind in (1, 2, 3):
+            with self.subTest(compression=kind):
+                original = region({0: record(b"valid payload", kind)})
+                start = (struct.unpack_from(">I", original)[0] >> 8) * SECTOR_BYTES
+                length = struct.unpack_from(">I", original, start)[0]
+                self.assert_bad(original[:start + 4], "truncated chunk payload")
+                self.assert_bad(original[:start + 4 + length - 1], "truncated chunk payload")
+
+    def test_bad_short_tail_prevents_earlier_transform(self) -> None:
+        tail = record(b"valid payload", 3)
+        original = region({0: record(b"old", 2), 1: tail})
+        actual_end = len(original) - len(tail) + 4 + struct.unpack_from(">I", tail)[0]
+        self.assert_bad(original[:actual_end - 1], "truncated chunk payload")
+
+    def test_external_short_stub_updates_only_mcc_for_each_compression(self) -> None:
+        for kind in (1, 2, 3):
+            with self.subTest(compression=kind):
+                original = region({63: record(b"", kind, external=True)})[:-SECTOR_BYTES + 5]
+                self.path.write_bytes(original)
+                external = self.path.parent / "c.-33.97.mcc"
+                external_original = compress(b"old external", kind)
+                external.write_bytes(external_original)
+                changes = rewrite_region(self.path, lambda raw, _: b"new external")
+                self.assertEqual(changes, {external: compress(b"new external", kind)})
+                self.assertEqual(self.path.read_bytes(), original)
+                self.assertEqual(external.read_bytes(), external_original)
+
+    def test_external_short_stub_preserved_when_internal_chunk_changes(self) -> None:
+        stub = record(b"", 2, external=True)
+        original = region({0: record(b"old", 3), 1: stub})[:-SECTOR_BYTES + 5]
+        self.path.write_bytes(original)
+        external = self.path.parent / "c.-63.96.mcc"
+        external_original = compress(b"external", 2)
+        external.write_bytes(external_original)
+        changes = rewrite_region(self.path, lambda raw, _: b"new" if raw == b"old" else None)
+        self.assertEqual(set(changes), {self.path})
+        self.assertEqual(get_record(changes[self.path], 1), stub)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(external.read_bytes(), external_original)
+
+    def test_external_short_stub_requires_compression_byte(self) -> None:
+        original = region({0: record(b"", 2, external=True)})[:-SECTOR_BYTES + 4]
+        self.assert_bad(original, "truncated chunk payload")
+
+    def test_external_short_stub_still_requires_length_one(self) -> None:
+        original = bytearray(region({0: record(b"", 2, external=True)})[:-SECTOR_BYTES + 6])
+        start = (struct.unpack_from(">I", original)[0] >> 8) * SECTOR_BYTES
+        struct.pack_into(">I", original, start, 2)
+        self.assert_bad(bytes(original), "external chunk record must have length 1")
 
     def test_invalid_lengths(self) -> None:
         for length in (0, SECTOR_BYTES):

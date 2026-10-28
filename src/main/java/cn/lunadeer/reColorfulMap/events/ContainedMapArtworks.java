@@ -1,6 +1,7 @@
 package cn.lunadeer.reColorfulMap.events;
 
 import cn.lunadeer.reColorfulMap.MapItemData;
+import cn.lunadeer.reColorfulMap.storage.MapStorage.ImageReference;
 import org.bukkit.block.Container;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
@@ -21,11 +22,16 @@ final class ContainedMapArtworks {
     private ContainedMapArtworks() {
     }
 
-    record Result(Set<UUID> artworks, boolean truncated) {
+    record Result(Set<ImageReference> references, boolean truncated) {
+        Set<UUID> artworks() {
+            Set<UUID> result = new LinkedHashSet<>();
+            for (ImageReference reference : references) result.add(reference.artwork());
+            return Collections.unmodifiableSet(result);
+        }
     }
 
     static Result collect(ItemStack root, boolean includeContents) {
-        Set<UUID> artworks = new LinkedHashSet<>();
+        Set<ImageReference> references = new LinkedHashSet<>();
         if (root == null) {
             return new Result(Set.of(), false);
         }
@@ -36,7 +42,7 @@ final class ContainedMapArtworks {
         while (!pending.isEmpty() && examined < MAX_ITEMS) {
             Entry entry = pending.removeFirst();
             examined++;
-            MapItemData.reference(entry.item()).ifPresent(reference -> artworks.add(reference.artwork()));
+            MapItemData.reference(entry.item()).ifPresent(references::add);
             if (!includeContents) {
                 continue;
             }
@@ -63,7 +69,7 @@ final class ContainedMapArtworks {
                 pending.addLast(new Entry(child, entry.depth() + 1));
             }
         }
-        return new Result(Collections.unmodifiableSet(artworks), truncated || !pending.isEmpty());
+        return new Result(Collections.unmodifiableSet(references), truncated || !pending.isEmpty());
     }
 
     private record Entry(ItemStack item, int depth) {

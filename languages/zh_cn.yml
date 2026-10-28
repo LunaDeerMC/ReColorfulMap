@@ -37,7 +37,7 @@ reload-command:
   reloading-config: 正在重新加载配置文件...
   reload-config-success: 配置文件重新加载成功！
 map-manage:
-  usage: 用法：/mapmanage status|cancel|list|claim <地图画 UUID>
+  usage: 用法：/mapmanage copy|status|cancel|list|claim <地图画 UUID>
   admin-usage: 管理：/mapmanage inspect <UUID> | recover <UUID> <在线玩家> confirm | resolve <UUID> <pending|delivered|paid|unpaid|refunded> confirm
   no-permission: 你没有执行此操作的权限。
   idle: 你当前没有正在生成的地图画。
@@ -66,3 +66,11 @@ map-manage:
   resolve-payment-first: 请先核查经济插件的交易记录，并使用 paid、unpaid 或 refunded 确认支付结果。
   invalid-resolution: 此支付处理方式不适用于当前记录。
   operation-failed: 地图画管理操作失败：%s
+map-copy:
+  usage: 请手持地图画，使用 /mapmanage copy 复制。
+  space: 请为新副本预留一个空背包槽位。
+  changed: 手持地图或目标槽位发生变化，已取消复制，原物品已保留。
+  unavailable: 当前复制尚未完成或队列已满，请稍后重试。
+  failed: 地图复制失败，原物品已保留，请检查服务器日志。
+  uncertain: 无法确认复制结果，图片文件已保留，请核对背包和服务器日志。
+  copied: 独立副本已放入背包。

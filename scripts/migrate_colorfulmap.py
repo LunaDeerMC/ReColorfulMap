@@ -415,6 +415,21 @@ def migrate_document(document: Document, resolver: Resolver, counts: Counts) -> 
     return changed
 
 
+def migrate_region_chunk(raw: bytes, context: str, resolver: Resolver, counts: Counts) -> bytes | None:
+    # Every supported item uses the exact ASCII NBT string minecraft:filled_map,
+    # including legacy tags, modern components and nested containers. Without
+    # this substring there can be no match in migrate_document. The region codec
+    # still validates every location and compressed stream before reaching here.
+    # This is an item migration, not a full NBT health check of unrelated terrain.
+    if b"filled_map" not in raw:
+        return None
+    try:
+        document = parse(raw)
+        return dump(document) if migrate_document(document, resolver, counts) else None
+    except (NBTError, MigrationError) as error:
+        raise MigrationError(f"{context}: {error}") from error
+
+
 def validate_png(path: Path, data: bytes) -> None:
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise MigrationError(f"Invalid PNG: {path}")
@@ -804,11 +819,7 @@ def run(args) -> dict:
             plan.read(path)
 
             def transform(raw: bytes, context: str) -> bytes | None:
-                try:
-                    document = parse(raw)
-                    return dump(document) if migrate_document(document, resolver, counts) else None
-                except (NBTError, MigrationError) as error:
-                    raise MigrationError(f"{context}: {error}") from error
+                return migrate_region_chunk(raw, context, resolver, counts)
 
             for changed_path, data in rewrite_region(path, transform).items():
                 plan.add(changed_path, data)

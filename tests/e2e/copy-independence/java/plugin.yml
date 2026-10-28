@@ -1,0 +1,12 @@
+name: CopyProbe
+version: 1
+main: test.recolorfulmap.copy.CopyProbe
+api-version: '26.1'
+folia-supported: true
+depend: [ReColorfulMap]
+commands:
+  copyprobe:
+    permission: copyprobe.test
+permissions:
+  copyprobe.test:
+    default: op

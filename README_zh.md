@@ -73,16 +73,23 @@ ReColorfulMap 可以将图片自动转换为地图画阵列，用以方便地悬
 | 生成地图画    | `/tomap <image-url> [scale]` | recolorfulmap.tomap | true    |
 | 重载配置     | `/reloadcolorfulmap`            | recolorfulmap.admin | op      |
 | 清理临时文件  | `/cleancolorfulmap`             | recolorfulmap.admin | op      |
+| 复制手持地图 | `/mapmanage copy` | recolorfulmap.manage + recolorfulmap.copy | true |
 | 查看/取消生成 | `/mapmanage status`、`/mapmanage cancel` | recolorfulmap.manage | true |
 | 待领取地图 | `/mapmanage list`、`/mapmanage claim <UUID>` | recolorfulmap.manage | true |
 | 检查/恢复交付 | `/mapmanage inspect\|recover\|resolve ...` | recolorfulmap.admin | op |
 
 `/cleancolorfulmap` 仅清理插件写入或删除失败遗留的临时目录。
-地图物品真正销毁时会自动删除对应图片；放置、取回、拾取及区块卸载保留数据。
+新生成地图和指令副本分别拥有独立图片目录；销毁时只清理该独立画作，单块销毁保留其他分块。旧共享目录保留。放置、取回、拾取及区块卸载不删除图片。
 生成完成时玩家已离线，结果会保存为待领取地图；重新上线后执行 `/mapmanage list` 查看。
 收费为 `横向分块 × 纵向分块 × economy.cost-per-map`，仅在首次交付生成结果时扣款；
 离线结果在领取时扣款。没有其他收费模式，取下、移动和重新放置均免费。
 管理员恢复命令及中断交付的处理见 [运行与恢复说明](docs/runtime.md)。
+
+### 复制地图画
+
+手持整幅地图画或单独分块，使用 `/mapmanage copy`。指令免费复制一份到空背包槽位，原物品不变。整幅副本使用新的 UUID 目录和原生地图 ID，图片文件独立复制；分块副本成为独立的 1×1 地图画。每份副本占用独立存储空间，不做共享文件引用计数。
+
+仅支持指令复制。工作台和制图台的图片地图复制配方会被取消，不消耗输入。创造复制、复制含图容器、其他插件直接克隆物品数据不在支持范围，仍可能共享路径；普通创造背包移动不被拦截。其他插件可通过 `getArtworkCopyService()` 接入独立复制。详见[复制与数据生命周期](docs/copy-and-lifecycle.md)。
 
 ### 从 ColorfulMap 2.3 升级
 
@@ -98,7 +105,7 @@ ReColorfulMap 可以将图片自动转换为地图画阵列，用以方便地悬
 脚本将 PNG 复制到 `plugins/ReColorfulMap/maps`，并为已有物品写入图片路径 PDC；
 **仅复制 maps 目录已不能完成本次升级**。默认不带 `--apply` 时只做预检。
 完整旧阵列仍支持从任意分块整幅取回，放置与取回不删除图片。
-同源复制物品共享数据，其中一个真正销毁后不保证其他副本可用。
+旧副本迁移后仍可能共享目录；5.0.1 保留这些无独立标记的旧数据，物品销毁时不自动删图。不要手工为旧共享目录添加独立标记。
 
 需要 Linux/macOS 或 WSL、Python 3.10+。默认目录注意 `ReColorfulMap` 的大小写。
 原地迁移、回滚、自动删除覆盖范围及验证说明见 [地图画存储说明](docs/storage.md)。

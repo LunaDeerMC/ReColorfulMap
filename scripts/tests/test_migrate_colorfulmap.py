@@ -527,6 +527,18 @@ class MigrationIntegrationTest(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertFalse((self.root / migration.TRANSACTION_DIR).exists())
 
+    def test_mapless_prefilter_does_not_skip_invalid_compression(self):
+        region = self.world / "region" / "r.0.0.mca"
+        region.parent.mkdir()
+        data = bytearray(region_bytes(compound([("terrain", string("stone"))])))
+        data[8197] = 0  # Break the compressed stream before any item-byte filtering.
+        region.write_bytes(data)
+        before = self.snapshot(transactions=True)
+        with self.assertRaisesRegex(migration.RegionError, "invalid compressed chunk"):
+            self.run_migration("--apply")
+        self.assertEqual(self.snapshot(transactions=True), before)
+        self.assertFalse(self.target.exists())
+
     def test_replacing_existing_file_preserves_its_owner_and_group(self):
         before = self.player.stat()
         migration.replace_bytes(self.player, b"replacement-bytes", 0o640)

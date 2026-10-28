@@ -85,16 +85,23 @@ work.
 | Generate    | `/tomap <image-url> [scale]` | recolorfulmap.tomap | true    |
 | Reload      | `/reloadcolorfulmap`            | recolorfulmap.admin | op      |
 | Clean Temporary Files | `/cleancolorfulmap`    | recolorfulmap.admin | op      |
+| Copy Held Map | `/mapmanage copy` | recolorfulmap.manage + recolorfulmap.copy | true |
 | Generation Status / Cancel | `/mapmanage status`, `/mapmanage cancel` | recolorfulmap.manage | true |
 | Pending Maps | `/mapmanage list`, `/mapmanage claim <UUID>` | recolorfulmap.manage | true |
 | Inspect / Recover Delivery | `/mapmanage inspect\|recover\|resolve ...` | recolorfulmap.admin | op |
 
 `/cleancolorfulmap` removes temporary directories left by failed writes or deletions.
-Artwork files are deleted when a dropped map item is actually destroyed; placement, retrieval, pickups, and chunk unloads preserve them.
+Newly generated maps and command-created copies own separate artwork directories. Destruction cleans only that independent artwork; destroying a loose tile preserves other tiles. Legacy shared directories are retained. Placement, retrieval, pickups and chunk unloads preserve images.
 Results completed while the player is offline remain available through `/mapmanage list` and `claim`.
 The price is `columns × rows × economy.cost-per-map`, charged once when the generated result is first delivered.
 Offline results are charged when claimed. Retrieval, movement and replacement are always free; there is no alternative charging mode.
 See [runtime and recovery documentation (Chinese)](docs/runtime.md) for administrator recovery commands and interrupted deliveries.
+
+### Copying image maps
+
+Hold a whole image map or a loose tile and use `/mapmanage copy`. One free independent copy is added to an empty inventory slot; the original is unchanged. Whole maps copy their image files into a new UUID directory and receive new native map IDs. A loose tile becomes an independent 1×1 artwork. Copies use disk space; there is no shared-file reference counting.
+
+Only command copying is supported. Workbench/cartography image-copy recipes are cancelled without consuming inputs. Creative duplication, cloned containers and other plugins directly cloning item data are unsupported and can still share paths; normal creative inventory movement is not intercepted. Plugins can use `getArtworkCopyService()` instead of cloning an `ItemStack`. See [copy and lifecycle details](docs/copy-and-lifecycle.md).
 
 ### Upgrading from ColorfulMap 2.3
 
@@ -110,7 +117,7 @@ See [runtime and recovery documentation (Chinese)](docs/runtime.md) for administ
 The script copies PNG files to `plugins/ReColorfulMap/maps` and adds path PDC to existing items.
 **Copying the maps directory alone is no longer sufficient.** Omit `--apply` for a dry run.
 Existing complete arrays can still be retrieved from any tile and placed again without deleting their images.
-Copied items share the artwork directory; destruction of one copy invalidates the others.
+Legacy copied items may still share a directory after migration. Version 5.0.1 keeps those unmarked directories and does not automatically delete them. Do not manually mark old shared data as independent.
 
 The script requires Linux/macOS or WSL and Python 3.10+. Observe the case of `ReColorfulMap` in the default path.
 See [storage and migration documentation (Chinese)](docs/storage.md) for backups, rollback, in-place migration,

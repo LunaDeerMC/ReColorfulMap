@@ -78,7 +78,8 @@ def rewrite_region(
     returns replacement NBT, or ``None`` when no change is needed. All region
     locations, compression streams and external files are validated before any
     transform is invoked. Unmodified chunk records and all timestamps survive
-    an internal rewrite byte for byte; free sectors may be removed.
+    an internal rewrite byte for byte; missing final-sector padding is filled
+    only in the returned rewrite, and free sectors may be removed.
 
     GZIP (1), ZLIB (2) and raw (3) chunks are supported, including their external
     ``c.<global_x>.<global_z>.mcc`` counterparts. LZ4Block and sector-count 255
@@ -92,8 +93,12 @@ def rewrite_region(
     original = _read(path)
     if len(original) < HEADER_BYTES:
         raise RegionError(f"{path}: truncated region header")
-    if len(original) % SECTOR_BYTES:
-        raise RegionError(f"{path}: region size is not a multiple of 4096 bytes")
+    # RegionFile may write only the chunk record, without padding its last
+    # allocated sector. Allocation bounds and actual payload bounds therefore
+    # differ; allowing absent padding must never allow a truncated payload.
+    allocated_file_end = (
+        (len(original) + SECTOR_BYTES - 1) // SECTOR_BYTES * SECTOR_BYTES
+    )
 
     locations: list[tuple[int, int, int]] = []
     occupied: dict[int, int] = {}
@@ -111,7 +116,7 @@ def rewrite_region(
                 f"{path}: chunk slot {index}: unsupported 255-sector/oversized "
                 "Spigot chunk; normalize the region before migration"
             )
-        if (offset + count) * SECTOR_BYTES > len(original):
+        if (offset + count) * SECTOR_BYTES > allocated_file_end:
             raise RegionError(f"{path}: chunk slot {index} extends beyond the region file")
         for sector in range(offset, offset + count):
             if sector in occupied:
@@ -128,11 +133,15 @@ def rewrite_region(
         global_z = region_z * 32 + index // 32
         context = f"{path}:chunk[{global_x},{global_z}]"
         sectors = original[offset * SECTOR_BYTES : (offset + count) * SECTOR_BYTES]
+        if len(sectors) < 4:
+            raise RegionError(f"{context}: truncated chunk length header")
         length = struct.unpack_from(">I", sectors)[0]
         if length < 1:
             raise RegionError(f"{context}: chunk length does not contain a compression byte")
-        if length + 4 > len(sectors):
+        if length + 4 > count * SECTOR_BYTES:
             raise RegionError(f"{context}: chunk length exceeds its allocated sectors")
+        if offset * SECTOR_BYTES + length + 4 > len(original):
+            raise RegionError(f"{context}: truncated chunk payload")
         version = sectors[4]
         compression = version & 0x7F
         if compression not in (1, 2, 3):
@@ -180,11 +189,11 @@ def rewrite_region(
         for chunk in chunks:
             record = replacements.get(chunk.index, chunk.sectors)
             offset = len(result) // SECTOR_BYTES
-            count = len(record) // SECTOR_BYTES
+            count = (len(record) + SECTOR_BYTES - 1) // SECTOR_BYTES
             if offset > 0xFFFFFF:
                 raise RegionError(f"{path}: rewritten region exceeds the location table capacity")
             struct.pack_into(">I", header, chunk.index * 4, (offset << 8) | count)
-            result.extend(record)
+            result.extend(record.ljust(count * SECTOR_BYTES, b"\0"))
         result[:HEADER_BYTES] = header
         changes[path] = bytes(result)
     return changes
